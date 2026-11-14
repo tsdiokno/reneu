@@ -1,0 +1,29 @@
+# .clinerules — Strict Token-Efficiency & Execution Imperatives
+
+## 1. Context-Budget Rules (MANDATORY)
+- **PREFER `search_files` / `grep` OVER `read_file`**: For any file >300 lines (`src/App.tsx`, `src/components/AllNotesView.tsx`, `src/components/ReadingPlansView.tsx`, `src/components/SettingsView.tsx`, `server.ts`, `src/services/supabaseSync.ts`, `src/services/bibleStorage.ts`, `src/services/readingPlanEngine.ts`), locate exact line ranges via regex search FIRST, then read only `[match - 35, match + 35]`.
+- **FORBIDDEN READS**: Never read or search inside `node_modules/`, `dist/`, `dev-dist/`, `.git/`, `package-lock.json`, `bun.lock`, `*.png`, `*.woff2`, or `*.svg`.
+- **NO SPECULATIVE EXPLORATION**: Consult `AGENTS.md` Section 1 for exact file paths before invoking `list_files` or `search_files`.
+- **PARALLELIZE INDEPENDENT CALLS**: Combine multi-file reads, searches, or independent edits in a single response turn.
+
+## 2. Edit & Generation Discipline
+- **DIFF-ONLY MUTATIONS**: Use `replace_in_file` with minimal surrounding anchor lines. Never use `write_to_file` on existing files unless performing a full replacement explicitly requested.
+- **SCOPE LOCK**: Modify ONLY symbols required by the prompt. Zero opportunistic refactors, comment rewrites, import reordering, or whitespace sweeps.
+- **ONE-SHOT COMPLETION**: Write new modules completely on the first pass; never create stub placeholders to patch in a subsequent turn.
+- **NO SELF-ECHO**: Do not re-read files after applying a clean diff.
+
+## 3. Command & Verification Batching
+- **DEFERRED VERIFICATION**: Apply all code changes first, then execute ONE combined check:
+  `npm run lint && npm run build`
+- **CONDITIONAL CHECKS**: Run `npm audit --audit-level=high` ONLY when dependencies (`package.json`) change. Do not spin up dev servers unless runtime HTTP testing is explicitly required.
+- **FAIL-FAST**: On error, inspect only the reported file + line window; cap fix-verify loops at 3 attempts.
+
+## 4. Output Compression
+- **ZERO FILLER**: No greetings, meta-narration ("I will now..."), or restating the user's request.
+- **TERSE REPORTING**: Summarize finished work in <=5 short bullets citing only changed behavior and check results. Omit raw terminal noise and unmodified code blocks.
+
+## 5. Repo Guardrails
+- **Framework**: React 19 + TS 5.8 + Tailwind v4 (`src/index.css`) + Vite 6 + Express 5 (`server.ts`).
+- **Offline-First & RLS**: Unauthenticated writes stay in local Dexie (`src/services/db.ts`); Supabase sync (`src/services/supabaseSync.ts`) requires verified `userId`.
+- **Copy Rule**: User-facing AI summary labels must say `Intelligent Summaries` (not `Synthesis Engine` or `Thematic Synthesis`).
+- **Release Tagging**: Keep `Dev` in dev mode and GitHub release tags in production (`src/utils/usePWAUpdate.ts`, `server.ts`).

@@ -1,0 +1,90 @@
+name: Release & Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Optional release tag (e.g. v1.3.1)'
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci-and-deploy:
+    name: Validate, Release & Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install & Validate
+        run: |
+          npm ci
+          npm run lint
+          npm audit --audit-level=high
+
+      - name: Resolve Version Tag
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version_tag }}" ]; then
+            TAG="${{ github.event.inputs.version_tag }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG=""
+          fi
+          if [ -n "$TAG" ] && [[ ! "$TAG" =~ ^v ]]; then
+            TAG="v${TAG}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Production PWA
+        env:
+          VITE_GITHUB_RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          VITE_GITHUB_REPO: ${{ github.repository }}
+          VITE_ENABLE_DUMMY_DATA: 'false'
+        run: npm run build
+
+      - name: Publish GitHub Release
+        if: ${{ steps.meta.outputs.tag != '' && github.event_name != 'release' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Release ${{ steps.meta.outputs.tag }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy to Vercel (CLI)
+        if: ${{ secrets.VERCEL_TOKEN != '' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VITE_GITHUB_RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          VITE_GITHUB_REPO: ${{ github.repository }}
+          VITE_ENABLE_DUMMY_DATA: 'false'
+        run: |
+          npx --yes vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+          npx --yes vercel@latest build --prod --token="$VERCEL_TOKEN"
+          npx --yes vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN"
