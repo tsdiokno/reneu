@@ -12,7 +12,7 @@ export const SettingsViewSkeleton: React.FC = () => {
         <section className="flex flex-col gap-3">
           <div className="flex items-baseline justify-between">
             <div className="h-3 w-16 rounded bg-[var(--text-primary)]/15 uppercase tracking-wider" />
-            <div className="h-3 w-28 rounded bg-[var(--text-primary)]/10 font-mono" />
+            <div className="h-3 w-28 rounded bg-[var(--text-primary)]/10 font-sans" />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -58,7 +58,7 @@ export const SettingsViewSkeleton: React.FC = () => {
         <section className="flex flex-col gap-3">
           <div className="flex items-baseline justify-between">
             <div className="h-3 w-20 rounded bg-[var(--text-primary)]/15 uppercase tracking-wider" />
-            <div className="h-3 w-24 rounded bg-[var(--text-primary)]/10 font-mono" />
+            <div className="h-3 w-24 rounded bg-[var(--text-primary)]/10 font-sans" />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -95,7 +95,7 @@ export const SettingsViewSkeleton: React.FC = () => {
         <section className="flex flex-col gap-3">
           <div className="flex items-baseline justify-between">
             <div className="h-3 w-20 rounded bg-[var(--text-primary)]/15 uppercase tracking-wider" />
-            <div className="h-3 w-32 rounded bg-[var(--text-primary)]/10 font-mono" />
+            <div className="h-3 w-32 rounded bg-[var(--text-primary)]/10 font-sans" />
           </div>
 
           <div className="grid grid-cols-4 gap-2">
@@ -115,7 +115,7 @@ export const SettingsViewSkeleton: React.FC = () => {
         <section className="flex flex-col gap-3">
           <div className="flex items-baseline justify-between">
             <div className="h-3 w-24 rounded bg-[var(--text-primary)]/15 uppercase tracking-wider" />
-            <div className="h-3 w-16 rounded bg-[var(--text-primary)]/10 font-mono" />
+            <div className="h-3 w-16 rounded bg-[var(--text-primary)]/10 font-sans" />
           </div>
 
           <div className="grid grid-cols-3 gap-2">

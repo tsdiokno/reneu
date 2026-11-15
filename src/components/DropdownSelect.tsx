@@ -64,7 +64,7 @@ export function DropdownSelect<T extends string | number>({
         >
           {icon && <span className="shrink-0 opacity-75">{icon}</span>}
           <span className="truncate flex-1 text-left font-sans">{displayLabel}</span>
-          <span className="font-mono text-xs opacity-60 shrink-0 select-none">▾</span>
+          <span className="font-sans text-xs opacity-60 shrink-0 select-none">▾</span>
         </button>
 
         {/* Native accessible select element overlay */}

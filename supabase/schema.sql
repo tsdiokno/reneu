@@ -35,8 +35,11 @@ CREATE TABLE IF NOT EXISTS public.notes (
     trajectory_summary TEXT,
     practical_application TEXT,
     created_at BIGINT NOT NULL,
-    updated_at BIGINT NOT NULL
+    updated_at BIGINT NOT NULL,
+    deleted_at BIGINT
 );
+
+ALTER TABLE public.notes ADD COLUMN IF NOT EXISTS deleted_at BIGINT;
 
 -- Index frequently queried columns for high-performance filtering
 CREATE INDEX IF NOT EXISTS idx_notes_user_id ON public.notes(user_id);

@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@custom-variant dark (&:where([data-theme="black"], [data-theme="black"] *, .dark, .dark *));
 
 /* -------------------------------------------------------------------------- */
 /* Theme Typography: 100% Offline PWA Font Definitions                        */
@@ -225,7 +226,7 @@
   }
 
   body {
-    font-family: var(--font-serif);
+    font-family: var(--font-sans);
     font-size: 1rem;
     line-height: 1.6;
     background-color: var(--bg-app);
@@ -418,17 +419,12 @@ a:focus-visible,
   will-change: transform;
 }
 
-/* When not in notes view: centered on mobile and tablet */
+/* On mobile (< 768px), tab bar fills available width from the left edge */
 .dock-nav-animated.dock-centered {
-  transform: translateX(calc(50vw - 50% - 1rem));
+  transform: translateX(0);
 }
 
-@media (min-width: 640px) {
-  .dock-nav-animated.dock-centered {
-    transform: translateX(calc(50vw - 50% - 1.5rem));
-  }
-}
-
+/* On tablet (768px - 1023px), center the compact dock horizontally */
 @media (min-width: 768px) {
   .dock-nav-animated.dock-centered {
     transform: translateX(calc(50vw - 50% - 2rem));

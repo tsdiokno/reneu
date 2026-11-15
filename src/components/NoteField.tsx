@@ -150,13 +150,13 @@ const NoteFieldComponent: React.FC<NoteFieldProps> = ({
       window.clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = null;
     }
-    setLocalText('');
-    latestLocalTextRef.current = '';
     if (onDelete) {
       onDelete();
-    } else {
-      onUpdateContent('');
+      return;
     }
+    setLocalText('');
+    latestLocalTextRef.current = '';
+    onUpdateContent('');
     setIsEditing(false);
   };
 
@@ -184,7 +184,7 @@ const NoteFieldComponent: React.FC<NoteFieldProps> = ({
                   e.stopPropagation();
                   onTokenClick?.(part.tokenTarget, verseNum, part.label);
                 }}
-                className="inline-flex items-baseline font-mono text-sm font-semibold text-[var(--text-primary)] hover:underline underline-offset-4 decoration-2 cursor-pointer transition-colors select-none mx-1 focus-visible:outline-none"
+                className="inline-flex items-baseline font-sans text-sm font-semibold text-[var(--text-primary)] hover:underline underline-offset-4 decoration-2 cursor-pointer transition-colors select-none mx-1 focus-visible:outline-none"
                 title={`Click to view ${part.label}`}
               >
                 {renderHighlightedText(part.label, searchQuery)}

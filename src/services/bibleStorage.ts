@@ -133,14 +133,38 @@ export async function ensureNotesInitialized(): Promise<void> {
   return notesInitPromise;
 }
 
-export async function getNotesByChapter(bookId: number, chapter: number): Promise<CommentaryNote[]> {
-  await ensureNotesInitialized();
-  return await db.notes.where('[bookId+chapter]').equals([bookId, chapter]).toArray();
+export const SOFT_DELETE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function isNoteDeleted(note: CommentaryNote): boolean {
+  return Boolean(note.deletedAt && note.deletedAt > 0);
 }
 
-export async function getAllNotes(): Promise<CommentaryNote[]> {
+export function isDeletedNoteExpired(note: CommentaryNote, now = Date.now()): boolean {
+  if (!note.deletedAt || note.deletedAt <= 0) return false;
+  return now - note.deletedAt > SOFT_DELETE_RETENTION_MS;
+}
+
+export function getDeletedNoteDaysRemaining(note: CommentaryNote, now = Date.now()): number {
+  if (!note.deletedAt || note.deletedAt <= 0) return 0;
+  const remainingMs = SOFT_DELETE_RETENTION_MS - (now - note.deletedAt);
+  if (remainingMs <= 0) return 0;
+  return Math.max(1, Math.ceil(remainingMs / (24 * 60 * 60 * 1000)));
+}
+
+export async function getNotesByChapter(bookId: number, chapter: number): Promise<CommentaryNote[]> {
   await ensureNotesInitialized();
-  return await db.notes.orderBy('updatedAt').reverse().toArray();
+  const chapterNotes = await db.notes.where('[bookId+chapter]').equals([bookId, chapter]).toArray();
+  return chapterNotes.filter((n) => !isNoteDeleted(n));
+}
+
+export async function getAllNotes(options?: { includeDeleted?: boolean }): Promise<CommentaryNote[]> {
+  await ensureNotesInitialized();
+  const all = await db.notes.orderBy('updatedAt').reverse().toArray();
+  if (options?.includeDeleted) {
+    const now = Date.now();
+    return all.filter((n) => !isNoteDeleted(n) || !isDeletedNoteExpired(n, now));
+  }
+  return all.filter((n) => !isNoteDeleted(n));
 }
 
 export async function addOrUpdateNote(note: CommentaryNote): Promise<void> {
@@ -149,9 +173,56 @@ export async function addOrUpdateNote(note: CommentaryNote): Promise<void> {
   void pushNoteToCloud(plain);
 }
 
+export async function softDeleteNote(id: string): Promise<CommentaryNote | null> {
+  await ensureNotesInitialized();
+  const existing = await db.notes.get(id);
+  if (!existing) return null;
+  const now = Date.now();
+  const updated: CommentaryNote = clonePlain({
+    ...existing,
+    deletedAt: now,
+    updatedAt: now,
+  });
+  await db.notes.put(updated);
+  void pushNoteToCloud(updated);
+  return updated;
+}
+
+export async function restoreNote(id: string): Promise<CommentaryNote | null> {
+  await ensureNotesInitialized();
+  const existing = await db.notes.get(id);
+  if (!existing) return null;
+  const plain: CommentaryNote = clonePlain({
+    ...existing,
+    updatedAt: Date.now(),
+  });
+  delete plain.deletedAt;
+  await db.notes.put(plain);
+  void pushNoteToCloud(plain);
+  return plain;
+}
+
 export async function deleteNote(id: string): Promise<void> {
   await db.notes.delete(id);
   void deleteNoteFromCloud(id);
+}
+
+/**
+ * Permanently removes soft-deleted notes whose 30-day recovery window has expired.
+ */
+export async function pruneExpiredDeletedNotes(): Promise<string[]> {
+  await ensureNotesInitialized();
+  const notes = await db.notes.toArray();
+  const now = Date.now();
+  const expiredIds: string[] = [];
+  for (const n of notes) {
+    if (isDeletedNoteExpired(n, now)) {
+      expiredIds.push(n.id);
+      await db.notes.delete(n.id);
+      void deleteNoteFromCloud(n.id);
+    }
+  }
+  return expiredIds;
 }
 
 export async function createSynthesisNote(params: {
@@ -557,7 +628,7 @@ export async function pruneExpiredSyntheses(): Promise<string[]> {
   const notes = await db.notes.toArray();
   const expiredIds: string[] = [];
   for (const n of notes) {
-    if (n.isSynthesis && isSynthesisExpired(n)) {
+    if (n.isSynthesis && !isNoteDeleted(n) && isSynthesisExpired(n)) {
       expiredIds.push(n.id);
       await db.notes.delete(n.id);
     }
@@ -573,7 +644,7 @@ export async function pruneUnretainedSyntheses(): Promise<string[]> {
   const notes = await db.notes.toArray();
   const prunedIds: string[] = [];
   for (const n of notes) {
-    if (n.isSynthesis && !isSynthesisRetained(n)) {
+    if (n.isSynthesis && !isNoteDeleted(n) && !isSynthesisRetained(n)) {
       prunedIds.push(n.id);
       await db.notes.delete(n.id);
     }

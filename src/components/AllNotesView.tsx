@@ -3,6 +3,12 @@ import {
   getAllNotes,
   addOrUpdateNote,
   deleteNote,
+  softDeleteNote,
+  restoreNote,
+  isNoteDeleted,
+  isDeletedNoteExpired,
+  getDeletedNoteDaysRemaining,
+  pruneExpiredDeletedNotes,
   createSynthesisNote,
   createPlainNote,
   seedSampleCommentaries,
@@ -19,6 +25,8 @@ import {
   pruneExpiredSyntheses,
   appendToSynthesisProfile,
 } from '../services/bibleStorage';
+import { cleanNaturalSynthesis } from '../utils/synthesisText';
+import { ConfirmModal } from './ConfirmModal';
 import { checkIsDevMode } from '../utils/devSimulation';
 import type { CommentaryNote, SynthesisResult, FootnoteReference } from '../types/bible';
 import { getBookById } from '../data/canonicalBooks';
@@ -95,8 +103,8 @@ const StarIconButton: React.FC<{
     onClick={onClick}
     className={`${
       isStarred
-        ? 'text-amber-500 hover:text-amber-600 opacity-100 sm:opacity-90 sm:hover:opacity-100'
-        : 'text-[var(--text-subtle)] opacity-70 hover:opacity-100 hover:text-amber-500 sm:opacity-0 sm:group-hover:opacity-70 sm:hover:!opacity-100'
+        ? 'text-[var(--text-primary)] hover:text-[var(--text-subtle)] opacity-100 sm:opacity-90 sm:hover:opacity-100'
+        : 'text-[var(--text-subtle)] opacity-70 hover:opacity-100 hover:text-[var(--text-primary)] sm:opacity-0 sm:group-hover:opacity-70 sm:hover:!opacity-100'
     } transition-opacity w-9 h-9 sm:w-8 sm:h-8 p-2 sm:p-1.5 -m-1 cursor-pointer select-none rounded flex items-center justify-center`}
     title={title}
     aria-label={ariaLabel}
@@ -282,6 +290,13 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
   const [newPlainNoteTitle, setNewPlainNoteTitle] = useState<string>('');
   const [newPlainNoteContent, setNewPlainNoteContent] = useState<string>('');
   const [isSynthesizing, setIsSynthesizing] = useState<boolean>(false);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    onConfirm: () => void | Promise<void>;
+  } | null>(null);
+  const [isConfirmLoading, setIsConfirmLoading] = useState<boolean>(false);
 
   const isSynthesizingRef = useRef<boolean>(false);
   const diceRolledInSessionRef = useRef<boolean>(false);
@@ -295,6 +310,12 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
   useEffect(() => {
     userProfileRef.current = userProfile;
   }, [userProfile]);
+
+  useEffect(() => {
+    if (isComposingPlainNote && filters.noteType === 'deleted') {
+      setFilters((prev) => ({ ...prev, noteType: 'all' }));
+    }
+  }, [isComposingPlainNote, filters.noteType]);
 
   // Triple dice roll mechanism (d20, d12, d6) acting as a balanced gatekeeper
   const rollMultiDice = useCallback((hasExistingSynthesis: boolean, newNotesCount: number): MultiDiceRollResult => {
@@ -340,12 +361,24 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
     return currentProf;
   }, []);
 
-  // Discard a synthesis directly from state and storage, notifying skills engine
+  // Soft-delete a synthesis with confirmation, notifying skills engine
   const handleDiscardSynthesis = useCallback(
-    async (note: CommentaryNote) => {
-      await deleteNote(note.id);
-      setAllNotes((prev) => prev.filter((n) => n.id !== note.id));
-      await notifyDiscardToSkillsEngine(note, userProfileRef.current);
+    (note: CommentaryNote) => {
+      setConfirmDialog({
+        title: 'Discard Intelligent Summary?',
+        message:
+          'This summary will be moved to Deleted notes for 30 days before permanent removal. You can restore it within 30 days under Types → Deleted notes.',
+        confirmLabel: 'Discard Summary',
+        onConfirm: async () => {
+          const updated = await softDeleteNote(note.id);
+          if (updated) {
+            setAllNotes((prev) => prev.map((n) => (n.id === note.id ? updated : n)));
+          } else {
+            setAllNotes((prev) => prev.filter((n) => n.id !== note.id));
+          }
+          await notifyDiscardToSkillsEngine(note, userProfileRef.current);
+        },
+      });
     },
     [notifyDiscardToSkillsEngine]
   );
@@ -354,8 +387,8 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
   const executeRandomizedSynthesis = useCallback(async (currentNotes: CommentaryNote[], currentProfile: string) => {
     if (isSynthesizingRef.current) return;
 
-    // Both verse commentary notes and plain notes are valid candidates
-    const candidates = currentNotes.filter((n) => !n.isSynthesis && n.content.trim().length > 0);
+    // Both verse commentary notes and plain notes are valid candidates (never deleted notes)
+    const candidates = currentNotes.filter((n) => !isNoteDeleted(n) && !n.isSynthesis && n.content.trim().length > 0);
     if (candidates.length < 2) return;
 
     const userApiKey = await getGeminiApiKey();
@@ -434,7 +467,9 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
 
         // Replace any previous un-retained synthesis before creating the new one
         // (silently expires or is replaced by new synthesis before 48h)
-        const unRetained = allNotesRef.current.filter((n) => n.isSynthesis && !isSynthesisRetained(n));
+        const unRetained = allNotesRef.current.filter(
+          (n) => !isNoteDeleted(n) && n.isSynthesis && !isSynthesisRetained(n)
+        );
         for (const old of unRetained) {
           await deleteNote(old.id);
         }
@@ -451,8 +486,11 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
           practicalApplication: result.practicalApplication,
         });
 
-        // Retain any preserved syntheses (starred or with commentary), plus newNote at the top
-        setAllNotes((prev) => [newNote, ...prev.filter((n) => !n.isSynthesis || isSynthesisRetained(n))]);
+        // Retain deleted notes + preserved syntheses (starred or with commentary), plus newNote at the top
+        setAllNotes((prev) => [
+          newNote,
+          ...prev.filter((n) => isNoteDeleted(n) || !n.isSynthesis || isSynthesisRetained(n)),
+        ]);
 
         // The user profile is updated ONLY after a successful synthesis
         if (result.updatedUserProfile && result.updatedUserProfile.trim().length > 0) {
@@ -492,10 +530,11 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
       // Clear the flag immediately so subsequent view renders or tab navigations do not re-trigger
       await clearNewNoteMadeForSynthesis();
 
-      const candidates = notesList.filter((n) => !n.isSynthesis && n.content.trim().length > 0);
+      const activeNotes = notesList.filter((n) => !isNoteDeleted(n));
+      const candidates = activeNotes.filter((n) => !n.isSynthesis && n.content.trim().length > 0);
       if (candidates.length < 2) return;
 
-      const syntheses = notesList
+      const syntheses = activeNotes
         .filter((n) => n.isSynthesis)
         .sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt));
       const latestSynthesis = syntheses[0];
@@ -560,17 +599,21 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
   useEffect(() => {
     let mounted = true;
 
-    // Silently prune expired un-retained syntheses (>48h) on load
+    // Silently prune expired un-retained syntheses (>48h) and expired soft-deleted notes (>30d) on load
     pruneExpiredSyntheses().catch(() => {});
+    pruneExpiredDeletedNotes().catch(() => {});
 
-    getAllNotes().then(async (notes) => {
+    getAllNotes({ includeDeleted: true }).then(async (notes) => {
       if (!mounted) return;
 
-      // Filter out any expired syntheses
-      const unexpiredNotes = notes.filter((n) => !isSynthesisExpired(n));
+      // Filter out any expired provisional syntheses (keep valid active + non-expired deleted notes in state)
+      const validNotes = notes.filter(
+        (n) => (isNoteDeleted(n) && !isDeletedNoteExpired(n)) || (!isNoteDeleted(n) && !isSynthesisExpired(n))
+      );
 
-      let availableNotes = unexpiredNotes;
-      if (unexpiredNotes.length === 0 && isDummyDataEnabled()) {
+      let availableNotes = validNotes;
+      const activeAvailable = validNotes.filter((n) => !isNoteDeleted(n));
+      if (activeAvailable.length === 0 && validNotes.length === 0 && isDummyDataEnabled()) {
         const seeded = await seedSampleCommentaries();
         if (mounted) {
           availableNotes = seeded;
@@ -591,7 +634,10 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
       const wasNewNoteMade = await hasNewNoteBeenMadeForSynthesis();
       if (wasNewNoteMade && !diceRolledInSessionRef.current) {
         diceRolledInSessionRef.current = true;
-        void evaluateDiceForSynthesis(availableNotes, activeProfile);
+        void evaluateDiceForSynthesis(
+          availableNotes.filter((n) => !isNoteDeleted(n)),
+          activeProfile
+        );
       }
     })
       .finally(() => {
@@ -616,18 +662,28 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
     };
   }, [evaluateDiceForSynthesis, notifyDiscardToSkillsEngine]);
 
-  // Active synthesis: the latest valid, unexpired synthesis
-  // Keeps visible permanently if starred or commented; otherwise expires after 48h or is replaced by new synthesis
-  const activeSynthesis = useMemo(() => {
-    const validSyntheses = allNotes
-      .filter((n) => n.isSynthesis && !isSynthesisExpired(n))
-      .sort((a, b) => (b.createdAt || b.updatedAt) - (a.createdAt || a.updatedAt));
-    return validSyntheses[0] || null;
+  const activeAllNotes = useMemo(() => {
+    return allNotes.filter((n) => !isNoteDeleted(n) && !isSynthesisExpired(n));
   }, [allNotes]);
 
-  // Notes stream: includes all standard notes PLUS any retained syntheses (excluding the currently active hero synthesis)
+  const deletedNotes = useMemo(() => {
+    return allNotes
+      .filter((n) => isNoteDeleted(n) && !isDeletedNoteExpired(n))
+      .sort((a, b) => (b.deletedAt || b.updatedAt) - (a.deletedAt || a.updatedAt));
+  }, [allNotes]);
+
+  // Active synthesis: the latest valid, unexpired active synthesis
+  // Keeps visible permanently if starred or commented; otherwise expires after 48h or is replaced by new synthesis
+  const activeSynthesis = useMemo(() => {
+    const validSyntheses = activeAllNotes
+      .filter((n) => n.isSynthesis)
+      .sort((a, b) => (b.createdAt || b.updatedAt) - (a.createdAt || a.updatedAt));
+    return validSyntheses[0] || null;
+  }, [activeAllNotes]);
+
+  // Notes stream: includes all standard active notes PLUS any retained active syntheses (excluding the currently active hero synthesis)
   const streamNotes = useMemo(() => {
-    return allNotes.filter((n) => {
+    return activeAllNotes.filter((n) => {
       if (!n.isSynthesis) return true;
       // Retained syntheses only (bookmarked or commented)
       if (!isSynthesisRetained(n)) return false;
@@ -635,7 +691,7 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
       if (activeSynthesis && n.id === activeSynthesis.id) return false;
       return true;
     });
-  }, [allNotes, activeSynthesis]);
+  }, [activeAllNotes, activeSynthesis]);
 
   // Active synthesis search match (Fuzzy, typo-tolerant, non-blocking)
   const activeSynthesisMatchesSearch = useMemo(() => {
@@ -678,8 +734,9 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
   const filteredAndSortedNotes = useMemo(() => {
     const query = deferredSearchQuery.trim();
 
-    // 1. Filter
+    // 1. Filter (deleted notes are never included in active stream or search results)
     const filtered = streamNotes.filter((note) => {
+      if (filters.noteType === 'deleted') return false;
       // Type Filter
       if (filters.noteType === 'scripture' && (note.isSynthesis || note.isPlainNote || note.bookId === 0)) return false;
       if (filters.noteType === 'synthesis' && !note.isSynthesis) return false;
@@ -835,8 +892,12 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
       }
 
       if (newContent.trim() === '') {
-        await deleteNote(note.id);
-        setAllNotes((prev) => prev.filter((n) => n.id !== note.id));
+        const deleted = await softDeleteNote(note.id);
+        if (deleted) {
+          setAllNotes((prev) => prev.map((n) => (n.id === note.id ? deleted : n)));
+        } else {
+          setAllNotes((prev) => prev.filter((n) => n.id !== note.id));
+        }
         return;
       }
 
@@ -851,9 +912,30 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
     []
   );
 
-  const handleDeleteNote = useCallback(async (noteId: string) => {
-    await deleteNote(noteId);
-    setAllNotes((prev) => prev.filter((n) => n.id !== noteId));
+  const handleDeleteNote = useCallback((note: CommentaryNote) => {
+    const label = note.isPlainNote || note.bookId === 0
+      ? note.title?.trim() || 'this plain note'
+      : `${getBookById(note.bookId)?.name || 'Scripture'} ${note.chapter}:${note.startVerse}`;
+    setConfirmDialog({
+      title: 'Delete note?',
+      message: `Move ${label} to Deleted notes? It will be removed from search results, reading views, and Intelligent Summaries, and retained for 30 days before permanent removal.`,
+      confirmLabel: 'Delete Note',
+      onConfirm: async () => {
+        const deleted = await softDeleteNote(note.id);
+        if (deleted) {
+          setAllNotes((prev) => prev.map((n) => (n.id === note.id ? deleted : n)));
+        } else {
+          setAllNotes((prev) => prev.filter((n) => n.id !== note.id));
+        }
+      },
+    });
+  }, []);
+
+  const handleRestoreNote = useCallback(async (noteId: string) => {
+    const restored = await restoreNote(noteId);
+    if (restored) {
+      setAllNotes((prev) => prev.map((n) => (n.id === noteId ? restored : n)));
+    }
   }, []);
 
   const handleUpdatePlainNoteTitle = useCallback(
@@ -909,12 +991,13 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
         onNavigate(parsed.bookId, parsed.chapter, parsed.verse);
         return;
       }
-      // If it's a plain note or non-scripture reference, scroll to the note card if present
+      // If it's a plain note or non-scripture reference, scroll to the active note card if present
       const matchedNote = allNotesRef.current.find(
         (n) =>
-          n.id === refText ||
-          (n.title && n.title.toLowerCase() === refText.toLowerCase()) ||
-          refText.toLowerCase().includes((n.title || '').toLowerCase())
+          !isNoteDeleted(n) &&
+          (n.id === refText ||
+            (n.title && n.title.toLowerCase() === refText.toLowerCase()) ||
+            refText.toLowerCase().includes((n.title || '').toLowerCase()))
       );
       if (matchedNote) {
         const el = document.getElementById(`note-card-${matchedNote.id}`);
@@ -1061,8 +1144,8 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
                   filters={filters}
                   onUpdateFilters={setFilters}
                   availableBooks={availableBooks}
-                  totalNotesCount={streamNotes.length}
-                  filteredCount={filteredAndSortedNotes.length}
+                  totalNotesCount={filters.noteType === 'deleted' ? deletedNotes.length : streamNotes.length}
+                  filteredCount={filters.noteType === 'deleted' ? deletedNotes.length : filteredAndSortedNotes.length}
                 />
               </div>
             </div>
@@ -1073,26 +1156,30 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
       {/* Main Content Area */}
       <div className="w-full max-w-2xl mx-auto px-6 sm:px-8 py-8 md:py-12 font-sans">
 
-      {/* Active Synthesis or Loading State */}
-      {isSynthesizing && (
+      {/* Active Synthesis or Loading State (never displayed inside Deleted notes view) */}
+      {filters.noteType !== 'deleted' && isSynthesizing && (
         <section className="mb-14 pt-2 border-b border-[var(--line-subtle)] pb-10 animate-pulse">
           <div className="flex items-center gap-2 mb-4">
             <span className="font-sans text-xs font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
               Synthesis
             </span>
-            <span className="text-xs font-mono text-[var(--text-subtle)] opacity-70">
+            <span className="text-xs font-sans text-[var(--text-subtle)] opacity-70">
               Discerning biblical trajectory...
             </span>
           </div>
           <div className="py-6 px-5 rounded-lg bg-[var(--text-primary)]/5 border border-[var(--line-subtle)]/40 flex items-center justify-center">
-            <span className="text-sm font-serif italic text-[var(--text-subtle)]">
+            <span className="text-sm font-sans italic text-[var(--text-subtle)]">
               Connecting theological threads across your reflections...
             </span>
           </div>
         </section>
       )}
 
-      {!isSynthesizing && activeSynthesis && filters.noteType !== 'scripture' && activeSynthesisMatchesSearch && (
+      {!isSynthesizing &&
+        activeSynthesis &&
+        filters.noteType !== 'scripture' &&
+        filters.noteType !== 'deleted' &&
+        activeSynthesisMatchesSearch && (
         <section className="mb-14 pt-2 group relative border-b border-[var(--line-subtle)] pb-12 animate-fade-in">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
@@ -1100,12 +1187,12 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
                 Synthesis
               </span>
               {activeSynthesis.isStarred && (
-                <span className="text-[10px] font-mono uppercase tracking-wider text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">
+                <span className="text-[10px] font-sans font-medium uppercase tracking-wider text-[var(--text-primary)] bg-[var(--text-primary)]/10 px-1.5 py-0.5 rounded">
                   Bookmarked
                 </span>
               )}
               {!isSynthesisRetained(activeSynthesis) && (
-                <span className="text-[10px] font-mono text-[var(--text-subtle)] opacity-60">
+                <span className="text-[10px] font-sans text-[var(--text-subtle)] opacity-60">
                   · Provisional
                 </span>
               )}
@@ -1163,9 +1250,22 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setIsComposingPlainNote(false);
-                    setNewPlainNoteTitle('');
-                    setNewPlainNoteContent('');
+                    if (newPlainNoteTitle.trim() || newPlainNoteContent.trim()) {
+                      setConfirmDialog({
+                        title: 'Discard unsaved note?',
+                        message: 'You have unsaved text in this note. Discarding will lose your draft.',
+                        confirmLabel: 'Discard Draft',
+                        onConfirm: () => {
+                          setIsComposingPlainNote(false);
+                          setNewPlainNoteTitle('');
+                          setNewPlainNoteContent('');
+                        },
+                      });
+                    } else {
+                      setIsComposingPlainNote(false);
+                      setNewPlainNoteTitle('');
+                      setNewPlainNoteContent('');
+                    }
                   }}
                   className="text-[var(--text-subtle)] opacity-70 hover:opacity-100 hover:text-rose-500 transition-opacity w-9 h-9 sm:w-8 sm:h-8 p-2 sm:p-1.5 -m-1 cursor-pointer select-none rounded flex items-center justify-center"
                   title="Cancel new note"
@@ -1216,7 +1316,102 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
           </div>
         )}
 
-        {filteredAndSortedNotes.length === 0 ? (
+        {filters.noteType === 'deleted' ? (
+          <div className="flex flex-col gap-10 animate-fade-in">
+            <p className="text-sm text-[var(--text-subtle)] leading-relaxed pb-6 border-b border-[var(--line-subtle)]">
+              Deleted notes remain available here for 30 days before permanent removal and are excluded from search results, reading views, and Intelligent Summaries. Notes in this view cannot be edited—restore a note to move it back to your active notes before editing.
+            </p>
+
+            {deletedNotes.length === 0 ? (
+              <div className="flex flex-col items-center gap-3 text-center py-12 text-[var(--text-subtle)] font-sans">
+                <p className="text-base sm:text-lg italic">
+                  No deleted notes from the past 30 days.
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setFilters((prev) => ({
+                      ...prev,
+                      noteType: 'all',
+                    }))
+                  }
+                  className="text-xs font-sans font-medium uppercase tracking-wider text-[var(--text-primary)] underline underline-offset-4 hover:opacity-70 transition-opacity cursor-pointer"
+                >
+                  Back to active notes
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-12">
+                {deletedNotes.map((note) => {
+                  const daysLeft = getDeletedNoteDaysRemaining(note);
+                  const book = !note.isSynthesis && note.bookId > 0 ? getBookById(note.bookId) : null;
+                  const headerLabel = note.isSynthesis
+                    ? note.title || 'Intelligent Summary'
+                    : note.isPlainNote || note.bookId === 0
+                    ? note.title?.trim() || 'Untitled Plain Note'
+                    : `${book?.name || 'Scripture'} ${note.chapter}:${note.startVerse}`;
+                  const typeLabel = note.isSynthesis
+                    ? 'Intelligent Summary'
+                    : note.isPlainNote || note.bookId === 0
+                    ? 'Plain Note'
+                    : 'Verse Note';
+
+                  return (
+                    <div
+                      key={note.id}
+                      id={`deleted-note-card-${note.id}`}
+                      className="flex flex-col gap-3 pb-8 border-b border-[var(--line-subtle)]/60 last:border-b-0 opacity-90"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap items-baseline gap-2 min-w-0">
+                          <span className="text-base font-sans font-semibold text-[var(--text-primary)] truncate">
+                            {headerLabel}
+                          </span>
+                          <span className="text-xs font-sans text-[var(--text-subtle)] opacity-60 uppercase shrink-0">
+                            {typeLabel}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-3 shrink-0">
+                          <span className="text-xs font-sans text-[var(--text-subtle)] opacity-60">
+                            Deleted {formatNoteDate(note.deletedAt || note.updatedAt)} · {daysLeft}d left
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => void handleRestoreNote(note.id)}
+                            className="px-3.5 py-1.5 rounded-full bg-[var(--text-primary)] text-[var(--bg-app)] text-xs font-semibold hover:opacity-90 active:scale-95 transition-all cursor-pointer shadow-xs"
+                            title="Restore note to active notes"
+                          >
+                            Restore
+                          </button>
+                        </div>
+                      </div>
+
+                      {note.isSynthesis ? (
+                        <div className="flex flex-col gap-3">
+                          <blockquote className="pl-5 sm:pl-7 border-l-2 border-[var(--text-primary)]/30">
+                            <p className="font-sans text-base sm:text-lg text-[var(--text-primary)] leading-relaxed">
+                              “{cleanNaturalSynthesis(note.synthesisQuote || note.content)}”
+                            </p>
+                          </blockquote>
+                          {note.synthesisQuote && note.content.trim().length > 0 && (
+                            <p className="text-[var(--text-secondary)] font-sans text-base leading-relaxed whitespace-pre-wrap select-text">
+                              {note.content}
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-[var(--text-secondary)] font-sans text-base leading-relaxed whitespace-pre-wrap select-text">
+                          {note.content}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : filteredAndSortedNotes.length === 0 ? (
           <div className="flex flex-col items-center gap-3 text-center py-16 text-[var(--text-subtle)] font-sans">
             <p className="text-base sm:text-lg italic">
               {searchQuery ||
@@ -1245,7 +1440,7 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
                     noteType: 'all',
                   });
                 }}
-                className="text-xs font-mono uppercase tracking-wider text-[var(--text-primary)] underline underline-offset-4 hover:opacity-70 transition-opacity cursor-pointer"
+                className="text-xs font-sans font-medium uppercase tracking-wider text-[var(--text-primary)] underline underline-offset-4 hover:opacity-70 transition-opacity cursor-pointer"
               >
                 Reset filters & search
               </button>
@@ -1265,11 +1460,11 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
 
               return (
                 <div key={note.id} className="note-stream-card pt-2 group relative">
-                  <div className="flex items-center justify-between mb-3 text-xs font-mono text-[var(--text-subtle)]">
+                  <div className="flex items-center justify-between mb-3 text-xs font-sans text-[var(--text-subtle)]">
                     <div className="flex items-center gap-2">
                       <span className="opacity-60">Synthesis · {formatNoteDate(note.updatedAt || note.createdAt)}</span>
                       {note.isStarred && (
-                        <span className="text-[10px] uppercase tracking-wider text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">
+                        <span className="text-[10px] uppercase tracking-wider text-[var(--text-primary)] bg-[var(--text-primary)]/10 px-1.5 py-0.5 rounded">
                           Bookmarked
                         </span>
                       )}
@@ -1313,17 +1508,17 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
                         searchQuery={deferredSearchQuery}
                         onUpdateTitle={(newTitle) => void handleUpdatePlainNoteTitle(note, newTitle)}
                       />
-                      <span className="text-xs font-mono text-[var(--text-subtle)] opacity-50 uppercase select-none shrink-0">
+                      <span className="text-xs font-sans text-[var(--text-subtle)] opacity-50 uppercase select-none shrink-0">
                         Plain Note
                       </span>
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-xs font-mono tracking-wider text-[var(--text-subtle)] opacity-50 uppercase select-none">
+                      <span className="text-xs font-sans tracking-wider text-[var(--text-subtle)] opacity-50 uppercase select-none">
                         {formatNoteDate(note.updatedAt || note.createdAt)}
                       </span>
                       <DeleteIconButton
-                        onClick={() => handleDeleteNote(note.id)}
+                        onClick={() => handleDeleteNote(note)}
                         title="Delete note"
                         ariaLabel="Delete note"
                       />
@@ -1360,11 +1555,11 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
                   </button>
 
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono tracking-wider text-[var(--text-subtle)] opacity-50 uppercase">
+                    <span className="text-xs font-sans tracking-wider text-[var(--text-subtle)] opacity-50 uppercase">
                       {formatNoteDate(note.updatedAt || note.createdAt)}
                     </span>
                     <DeleteIconButton
-                      onClick={() => handleDeleteNote(note.id)}
+                      onClick={() => handleDeleteNote(note)}
                       title="Delete note"
                       ariaLabel="Delete note"
                     />
@@ -1391,11 +1586,11 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
               <button
                 type="button"
                 onClick={() => setDisplayLimit((prev) => prev + INITIAL_NOTES_PAGE_SIZE)}
-                className="px-6 py-2.5 rounded-full border border-[var(--line-subtle)] text-xs font-mono tracking-wider uppercase text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:border-[var(--text-primary)]/40 hover:bg-[var(--text-primary)]/5 transition-all cursor-pointer shadow-xs"
+                className="px-6 py-2.5 rounded-full border border-[var(--line-subtle)] text-xs font-sans font-medium tracking-wider uppercase text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:border-[var(--text-primary)]/40 hover:bg-[var(--text-primary)]/5 transition-all cursor-pointer shadow-xs"
               >
                 Load more notes ({filteredAndSortedNotes.length - displayLimit} remaining)
               </button>
-              <span className="text-[11px] font-mono text-[var(--text-subtle)] opacity-50">
+              <span className="text-[11px] font-sans text-[var(--text-subtle)] opacity-50">
                 Showing {displayLimit} of {filteredAndSortedNotes.length} notes
               </span>
             </div>
@@ -1404,6 +1599,27 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
       )}
     </div>
       </div>
+
+      <ConfirmModal
+        isOpen={Boolean(confirmDialog)}
+        onClose={() => {
+          if (!isConfirmLoading) setConfirmDialog(null);
+        }}
+        onConfirm={async () => {
+          if (!confirmDialog) return;
+          setIsConfirmLoading(true);
+          try {
+            await confirmDialog.onConfirm();
+          } finally {
+            setIsConfirmLoading(false);
+            setConfirmDialog(null);
+          }
+        }}
+        title={confirmDialog?.title || 'Confirm action'}
+        message={confirmDialog?.message || ''}
+        confirmLabel={confirmDialog?.confirmLabel || 'Confirm'}
+        isLoading={isConfirmLoading}
+      />
     </div>
   );
 };

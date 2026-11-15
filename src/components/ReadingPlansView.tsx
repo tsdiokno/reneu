@@ -28,6 +28,7 @@ import {
   resetPlanProgress,
 } from '../services/readingPlanStorage';
 import { Modal } from './Modal';
+import { ConfirmModal } from './ConfirmModal';
 import { ReadingPlansContentSkeleton } from './ReadingPlansViewSkeleton';
 import type { FontFamily } from '../types/bible';
 import {
@@ -100,6 +101,13 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
   const [isPlanSwitcherOpen, setIsPlanSwitcherOpen] = useState<boolean>(false);
   const [isNewPlanModalOpen, setIsNewPlanModalOpen] = useState<boolean>(false);
   const [selectedPlanOption, setSelectedPlanOption] = useState<string>('mcheyne');
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    onConfirm: () => void | Promise<void>;
+  } | null>(null);
+  const [isConfirmLoading, setIsConfirmLoading] = useState<boolean>(false);
 
   // Plan Configuration State (4 Core Variables + Custom user-definable options)
   const [customTitle, setCustomTitle] = useState<string>('My Reading Plan');
@@ -313,24 +321,36 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
   };
 
   // Delete Plan
-  const handleDeletePlan = async (planId: string) => {
-    await deleteReadingPlan(planId);
-    await loadPlans();
+  const handleDeletePlan = (plan: ReadingPlan) => {
+    setConfirmAction({
+      title: 'Delete reading plan?',
+      message: `Delete "${plan.title}" and all of its reading progress? This action cannot be undone.`,
+      confirmLabel: 'Delete Plan',
+      onConfirm: async () => {
+        await deleteReadingPlan(plan.id);
+        await loadPlans();
+      },
+    });
   };
 
   // Reset Plan
-  const handleResetProgress = async () => {
+  const handleResetProgress = () => {
     if (!activePlan) return;
-    if (window.confirm('Reset all reading progress for this plan?')) {
-      const updated = await resetPlanProgress(activePlan.id);
-      if (updated) {
-        setActivePlanState(updated);
-        setAllPlansState((prev) =>
-          prev.map((p) => (p.id === updated.id ? updated : p))
-        );
-        onPlanProgressChange?.(updated);
-      }
-    }
+    setConfirmAction({
+      title: 'Reset reading progress?',
+      message: `Reset all completed days and chapters for "${activePlan.title}"? This action cannot be undone.`,
+      confirmLabel: 'Reset Progress',
+      onConfirm: async () => {
+        const updated = await resetPlanProgress(activePlan.id);
+        if (updated) {
+          setActivePlanState(updated);
+          setAllPlansState((prev) =>
+            prev.map((p) => (p.id === updated.id ? updated : p))
+          );
+          onPlanProgressChange?.(updated);
+        }
+      },
+    });
   };
 
   // Start Preset Plan
@@ -571,7 +591,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
                 <span>
                   {completedDaysCount} {completedDaysCount === 1 ? 'day' : 'days'} complete
                 </span>
-                <span className="font-mono text-xs font-medium text-[var(--text-primary)]">
+                <span className="font-sans text-xs font-medium text-[var(--text-primary)] tabular-nums">
                   {progressPercent}%
                 </span>
               </div>
@@ -638,13 +658,13 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
                     Day {focusedDayNumber}
                   </span>
                   {focusedDayNumber === currentElapsedDay && (
-                    <span className="text-xs font-mono uppercase tracking-wider text-[var(--text-subtle)] opacity-75">
+                    <span className="text-xs font-sans uppercase tracking-wider text-[var(--text-subtle)] opacity-75">
                       (Today)
                     </span>
                   )}
                   {isCurrentDayDone && (
                     <span
-                      className="text-emerald-600 dark:text-emerald-400 text-sm font-sans"
+                      className="text-emerald-700 dark:text-emerald-300 text-sm font-sans"
                       title="Completed"
                       aria-label="Completed"
                     >
@@ -873,7 +893,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
                         {plan.title}
                       </span>
                       {isActive && (
-                        <span className="text-[10px] uppercase font-mono tracking-wider text-emerald-600 dark:text-emerald-400">
+                        <span className="text-[10px] uppercase font-sans font-semibold tracking-wider text-emerald-700 dark:text-emerald-300">
                           Active
                         </span>
                       )}
@@ -885,7 +905,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => void handleDeletePlan(plan.id)}
+                    onClick={() => handleDeletePlan(plan)}
                     className="p-1.5 text-[var(--text-subtle)] hover:text-rose-500 transition-colors cursor-pointer"
                     title="Delete Plan"
                     aria-label="Delete Plan"
@@ -952,7 +972,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
                   {selectedPresetDef.title}
                 </span>
                 {selectedPresetDef.recommendedBadge && (
-                  <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--text-subtle)] px-1.5 py-0.5 rounded border border-[var(--line-subtle)] bg-[var(--bg-surface)]">
+                  <span className="text-[10px] font-sans font-medium uppercase tracking-wider text-[var(--text-subtle)] px-1.5 py-0.5 rounded border border-[var(--line-subtle)] bg-[var(--bg-surface)]">
                     {selectedPresetDef.recommendedBadge}
                   </span>
                 )}
@@ -960,7 +980,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
               <p className="text-xs text-[var(--text-subtle)] leading-relaxed">
                 {selectedPresetDef.description}
               </p>
-              <div className="flex items-center gap-2 mt-1 text-[11px] font-mono text-[var(--text-subtle)]">
+              <div className="flex items-center gap-2 mt-1 text-[11px] font-sans text-[var(--text-subtle)]">
                 <span>{selectedPresetDef.durationDays} days</span>
                 <span>•</span>
                 <span>{selectedPresetDef.daysPerWeek} days/week</span>
@@ -1028,10 +1048,10 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
                         const val = Math.max(1, Math.min(1000, Number(e.target.value) || 1));
                         setCustomDurationInput(val);
                       }}
-                      className="w-20 h-7 px-2 text-xs rounded border border-[var(--line-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] font-mono focus:outline-none focus:border-[var(--text-primary)]"
+                      className="w-20 h-7 px-2 text-xs rounded border border-[var(--line-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] font-sans tabular-nums focus:outline-none focus:border-[var(--text-primary)]"
                       placeholder="e.g. 45"
                     />
-                    <span className="text-xs text-[var(--text-subtle)] font-mono">days</span>
+                    <span className="text-xs text-[var(--text-subtle)] font-sans">days</span>
                   </div>
                 )}
               </div>
@@ -1147,7 +1167,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
                         className="rounded border-[var(--line-subtle)] text-[var(--text-primary)] cursor-pointer"
                       />
                       <span className="truncate flex-1">{b.name}</span>
-                      <span className="text-[10px] opacity-60 font-mono shrink-0">
+                      <span className="text-[10px] opacity-60 font-sans tabular-nums shrink-0">
                         {b.chapterCount}
                       </span>
                     </label>
@@ -1181,6 +1201,28 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
           </div>
         </div>
       </Modal>
+
+      {/* Confirmation Prompt for Plan Deletion & Progress Reset */}
+      <ConfirmModal
+        isOpen={Boolean(confirmAction)}
+        onClose={() => {
+          if (!isConfirmLoading) setConfirmAction(null);
+        }}
+        onConfirm={async () => {
+          if (!confirmAction) return;
+          setIsConfirmLoading(true);
+          try {
+            await confirmAction.onConfirm();
+          } finally {
+            setIsConfirmLoading(false);
+            setConfirmAction(null);
+          }
+        }}
+        title={confirmAction?.title || 'Confirm action'}
+        message={confirmAction?.message || ''}
+        confirmLabel={confirmAction?.confirmLabel || 'Confirm'}
+        isLoading={isConfirmLoading}
+      />
     </div>
   );
 };

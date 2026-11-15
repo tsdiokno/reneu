@@ -130,7 +130,7 @@ export const SynthesisHeroBlockquote: React.FC<SynthesisHeroBlockquoteProps> = (
                 className="text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:underline cursor-pointer select-none transition-colors py-2 -my-1 inline-flex items-center"
                 title={`Open ${fn.ref}`}
               >
-                <span className="font-mono text-xs opacity-60 mr-1">[{idx + 1}]</span>
+                <span className="font-sans text-xs opacity-60 mr-1">[{idx + 1}]</span>
                 <span>{renderHighlightedText(fn.ref, searchQuery)}</span>
               </button>
             ))}

@@ -99,7 +99,7 @@ export const ReaderViewSkeleton: React.FC<ReaderViewSkeletonProps> = ({
             <div className="lg:col-span-7 xl:col-span-6 lg:pl-12 max-w-2xl mx-auto lg:mx-0 w-full flex items-baseline">
               {/* Verse number container - sits right on the baseline of the first line of text */}
               <div className="inline-flex items-baseline justify-end gap-1 mr-3 lg:mr-4 shrink-0 select-none w-7 text-right">
-                <span className="text-xs font-mono font-medium text-[var(--text-subtle)] opacity-40 leading-none">
+                <span className="text-xs font-sans font-medium text-[var(--text-subtle)] opacity-40 leading-none">
                   {verseNum}
                 </span>
               </div>

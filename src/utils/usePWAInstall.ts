@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { checkSimulateInstalled } from './devSimulation';
 
 export type DevicePlatform = 'ios' | 'android' | 'mac' | 'windows' | 'linux';
+export type DeviceFormFactor = 'mobile' | 'tablet' | 'desktop';
+export type BrowserKind = 'safari' | 'chrome' | 'edge' | 'samsung' | 'firefox' | 'other';
 
 export interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -27,6 +29,49 @@ export function detectDevicePlatform(): DevicePlatform {
   return 'windows';
 }
 
+export function detectDeviceFormFactor(): DeviceFormFactor {
+  if (typeof window === 'undefined') return 'desktop';
+  const ua = window.navigator.userAgent.toLowerCase();
+
+  // iPhone / iPod are always mobile phones
+  if (/iphone|ipod/.test(ua)) return 'mobile';
+
+  // iPad or iPadOS desktop-class Safari (MacIntel + multi-touch)
+  if (
+    /ipad/.test(ua) ||
+    (window.navigator.platform === 'MacIntel' && window.navigator.maxTouchPoints > 1)
+  ) {
+    return 'tablet';
+  }
+
+  // Android distinguishes phones ("Mobile") from tablets (no "Mobile" token)
+  if (/android/.test(ua)) {
+    return /mobile/.test(ua) ? 'mobile' : 'tablet';
+  }
+
+  // Coarse pointer fallback for touch devices / emulators with mobile user-agent hints
+  const isCoarsePointer =
+    typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+  if (isCoarsePointer && window.navigator.maxTouchPoints > 0) {
+    const shortestEdge = Math.min(window.innerWidth || 0, window.innerHeight || 0);
+    return shortestEdge > 0 && shortestEdge < 768 ? 'mobile' : 'tablet';
+  }
+
+  return 'desktop';
+}
+
+export function detectBrowserKind(): BrowserKind {
+  if (typeof window === 'undefined') return 'other';
+  const ua = window.navigator.userAgent.toLowerCase();
+
+  if (/samsungbrowser/.test(ua)) return 'samsung';
+  if (/edg|edga|edgios/.test(ua)) return 'edge';
+  if (/fxios|firefox/.test(ua)) return 'firefox';
+  if (/crios|chrome|chromium/.test(ua)) return 'chrome';
+  if (/safari/.test(ua)) return 'safari';
+  return 'other';
+}
+
 export function usePWAInstall() {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState<boolean>(() => {
@@ -40,6 +85,8 @@ export function usePWAInstall() {
   });
 
   const [platform, setPlatform] = useState<DevicePlatform>(() => detectDevicePlatform());
+  const [formFactor, setFormFactor] = useState<DeviceFormFactor>(() => detectDeviceFormFactor());
+  const [browser, setBrowser] = useState<BrowserKind>(() => detectBrowserKind());
   const [isDismissed, setIsDismissed] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     try {
@@ -53,6 +100,8 @@ export function usePWAInstall() {
     if (typeof window === 'undefined') return;
 
     setPlatform(detectDevicePlatform());
+    setFormFactor(detectDeviceFormFactor());
+    setBrowser(detectBrowserKind());
 
     const updateInstallStatus = () => {
       const isSimulated = checkSimulateInstalled();
@@ -147,7 +196,12 @@ export function usePWAInstall() {
     isInstalled,
     isDismissed,
     platform,
+    formFactor,
+    browser,
     isIOS: platform === 'ios',
+    isMobile: formFactor === 'mobile',
+    isTablet: formFactor === 'tablet',
+    isDesktop: formFactor === 'desktop',
     install,
     dismissInstall,
     resetDismissal,

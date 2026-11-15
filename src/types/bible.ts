@@ -56,6 +56,7 @@ export interface CommentaryNote {
   content: string; // For standard notes: verse commentary. For synthesis notes: user reflection below the quote.
   createdAt: number;
   updatedAt: number;
+  deletedAt?: number; // Soft-delete timestamp (retained for 30 days before permanent purge)
   isSynthesis?: boolean;
   isPlainNote?: boolean;
   isStarred?: boolean; // Star/bookmark to retain permanently in personal collection

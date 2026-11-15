@@ -11,7 +11,7 @@ import {
   DEFAULT_APPEARANCE,
   getNotesByChapter,
   addOrUpdateNote,
-  deleteNote,
+  softDeleteNote,
   recordNewNoteMadeForSynthesis,
   getInitialExposedNotesSync,
   getExposedNotes,
@@ -33,7 +33,13 @@ import type {
 } from './types/readingPlan';
 import { getAssignedChaptersForDay } from './services/readingPlanEngine';
 import { setDayCompletionState } from './services/readingPlanStorage';
-import { parseOmnibarAction, parseScriptureReference } from './utils/referenceParser';
+import {
+  parseOmnibarAction,
+  parseScriptureReference,
+  formatNavigationLabel,
+  getOmnibarSuggestions,
+  type OmnibarSuggestion,
+} from './utils/referenceParser';
 import { VerseRow } from './components/VerseRow';
 import { CopiedToast } from './components/CopiedToast';
 import { checkSimulateSplash, checkSimulateLoginSplash } from './utils/devSimulation';
@@ -44,6 +50,7 @@ import { ReaderViewSkeleton } from './components/ReaderViewSkeleton';
 import { ReadingPlansViewSkeleton } from './components/ReadingPlansViewSkeleton';
 import { SplashInstallBanner } from './components/SplashInstallBanner';
 import { AboutModal } from './components/AboutModal';
+import { ConfirmModal } from './components/ConfirmModal';
 
 const AllNotesView = lazy(() => import('./components/AllNotesView'));
 const ReadingPlansView = lazy(() => import('./components/ReadingPlansView'));
@@ -97,7 +104,9 @@ export const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<'reader' | 'notes' | 'plans' | 'settings'>('reader');
   const [chapterData, setChapterData] = useState<ChapterData | null>(null);
   const [notes, setNotes] = useState<CommentaryNote[]>([]);
-  const [command, setCommand] = useState<string>('');
+  const [command, setCommand] = useState<string>(() => formatNavigationLabel(position));
+  const [isSuggestionsOpen, setIsSuggestionsOpen] = useState<boolean>(false);
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState<number>(0);
   const [focusedVerse, setFocusedVerse] = useState<number | null>(null);
   const targetScrollVerseRef = useRef<number | null>(null);
   const [exposedNotes, setExposedNotes] = useState<Set<string>>(() => getInitialExposedNotesSync());
@@ -115,6 +124,7 @@ export const App: React.FC = () => {
     return checkSimulateLoginSplash();
   });
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
+  const [pendingDeleteVerse, setPendingDeleteVerse] = useState<number | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -536,43 +546,103 @@ export const App: React.FC = () => {
     navigateToPosition(nextHistoryItem, { isHistoryAction: true });
   }, [canGoForward, nextHistoryItem, historyIndex, navigateToPosition]);
 
+  useEffect(() => {
+    setCommand(
+      formatNavigationLabel({
+        bookId: position.bookId,
+        chapter: position.chapter,
+        ...(focusedVerse ? { verse: focusedVerse } : {}),
+      })
+    );
+    setIsSuggestionsOpen(false);
+    setActiveSuggestionIndex(0);
+  }, [position.bookId, position.chapter, focusedVerse]);
+
+  const omnibarSuggestions = useMemo(() => {
+    if (!isSuggestionsOpen) return [];
+    return getOmnibarSuggestions(command, position.bookId, position.chapter, 7);
+  }, [isSuggestionsOpen, command, position.bookId, position.chapter]);
+
+  const selectOmnibarSuggestion = useCallback(
+    (suggestion: OmnibarSuggestion) => {
+      const validatedLabel = formatNavigationLabel(suggestion.target);
+      setCommand(validatedLabel);
+      setIsSuggestionsOpen(false);
+      setActiveSuggestionIndex(0);
+      navigateToPosition(suggestion.target);
+      commandInputRef.current?.blur();
+    },
+    [navigateToPosition]
+  );
+
   const handleCommandSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const lowerCmd = command.trim().toLowerCase();
+    const currentLabel = formatNavigationLabel(position);
+
     if (lowerCmd === '/plans' || lowerCmd === '/plan' || lowerCmd === 'plans' || lowerCmd === 'plan') {
       setCurrentView('plans');
-      setCommand('');
+      setCommand(currentLabel);
+      setIsSuggestionsOpen(false);
       commandInputRef.current?.blur();
       return;
     }
     if (lowerCmd === '/notes' || lowerCmd === '/note' || lowerCmd === 'notes') {
       setCurrentView('notes');
-      setCommand('');
+      setCommand(currentLabel);
+      setIsSuggestionsOpen(false);
       commandInputRef.current?.blur();
       return;
     }
     if (lowerCmd === '/settings' || lowerCmd === 'settings') {
       setCurrentView('settings');
-      setCommand('');
+      setCommand(currentLabel);
+      setIsSuggestionsOpen(false);
       commandInputRef.current?.blur();
       return;
     }
+
+    if (
+      isSuggestionsOpen &&
+      omnibarSuggestions.length > 0 &&
+      activeSuggestionIndex >= 0 &&
+      activeSuggestionIndex < omnibarSuggestions.length &&
+      !['parchment', 'white', 'light', 'black', 'dark', 'theme parchment', 'theme white', 'theme light', 'theme black', 'theme dark'].includes(lowerCmd)
+    ) {
+      selectOmnibarSuggestion(omnibarSuggestions[activeSuggestionIndex]);
+      return;
+    }
+
     const action = parseOmnibarAction(command, position.bookId, position.chapter);
     if (action) {
       if (action.type === 'theme') {
         setTheme(action.theme);
         setAppearance((prev) => ({ ...prev, theme: action.theme }));
-        setCommand('');
+        setCommand(currentLabel);
+        setIsSuggestionsOpen(false);
         commandInputRef.current?.blur();
         return;
       }
       const target = action.target;
+      const validatedLabel = formatNavigationLabel(target);
+      setCommand(validatedLabel);
+      setIsSuggestionsOpen(false);
+      setActiveSuggestionIndex(0);
       navigateToPosition(target);
-      setCommand('');
       commandInputRef.current?.blur();
       return;
     }
-    setCommand('');
+
+    // Fuzzy typo fallback when user submits directly
+    const fuzzyMatches = getOmnibarSuggestions(command, position.bookId, position.chapter, 1);
+    if (fuzzyMatches.length > 0) {
+      selectOmnibarSuggestion(fuzzyMatches[0]);
+      return;
+    }
+
+    setCommand(currentLabel);
+    setIsSuggestionsOpen(false);
+    commandInputRef.current?.blur();
   };
 
   const handleNoteChange = useCallback(
@@ -582,7 +652,7 @@ export const App: React.FC = () => {
 
       if (existing) {
         if (text.trim() === '') {
-          await deleteNote(existing.id);
+          await softDeleteNote(existing.id);
           updatedNotes = notes.filter((n) => n.id !== existing.id);
         } else {
           const isContentChanged = existing.content.trim() !== text.trim();
@@ -750,8 +820,19 @@ export const App: React.FC = () => {
   }, [position.bookId, position.chapter]);
 
   const handleDeleteNoteForVerse = useCallback((verseNum: number) => {
-    void handleNoteChange(verseNum, '');
-  }, [handleNoteChange]);
+    setPendingDeleteVerse(verseNum);
+  }, []);
+
+  const handleConfirmDeleteVerseNote = useCallback(async () => {
+    if (pendingDeleteVerse === null) return;
+    const verseNum = pendingDeleteVerse;
+    setPendingDeleteVerse(null);
+    const existing = notes.find((n) => n.startVerse === verseNum);
+    if (existing) {
+      await softDeleteNote(existing.id);
+      setNotes((prev) => prev.filter((n) => n.id !== existing.id));
+    }
+  }, [pendingDeleteVerse, notes]);
 
   // Performance: Prefetch adjacent chapter during browser idle time for instant chapter navigation
   useEffect(() => {
@@ -1097,7 +1178,9 @@ export const App: React.FC = () => {
       {currentView === 'reader' && (
         <header
           ref={readerOmnibarRef}
-          className="relative z-20 bg-[var(--bg-omnibar)] backdrop-blur-md pt-4 sm:pt-5 pb-4 px-4 sm:px-8 transition-colors"
+          className={`relative ${
+            isSuggestionsOpen && omnibarSuggestions.length > 0 ? 'z-40' : 'z-20'
+          } bg-[var(--bg-omnibar)] backdrop-blur-md pt-4 sm:pt-5 pb-4 px-4 sm:px-8 transition-colors`}
         >
           <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
             <form onSubmit={handleCommandSubmit} className="flex-1 min-w-0 flex items-center gap-2 sm:gap-3 py-1">
@@ -1193,35 +1276,119 @@ export const App: React.FC = () => {
                 </select>
               </div>
 
-              <input
-                ref={commandInputRef}
-                type="text"
-                value={command}
-                onChange={(e) => setCommand(e.target.value)}
-                placeholder={
-                  chapterData
-                    ? `${chapterData.bookName} ${chapterData.chapter}`
-                    : `${getBookById(position.bookId)?.name || 'Scripture'} ${position.chapter}`
-                }
-                className="w-full bg-transparent border-none outline-none font-sans text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight text-[var(--text-primary)] placeholder-[var(--input-placeholder)] py-1 leading-normal"
-                autoComplete="off"
-                spellCheck="false"
-                aria-label="Scripture navigation and search omnibar"
-              />
-              {command && (
-                <button
-                  type="button"
-                  onClick={() => setCommand('')}
-                  className="p-1 text-[var(--text-subtle)] hover:text-[var(--text-primary)] transition-colors cursor-pointer rounded-md shrink-0"
-                  title="Clear search"
-                  aria-label="Clear search"
-                >
-                  <svg className="w-5 h-5 sm:w-6 sm:h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
-              )}
+              <div className="relative flex-1 min-w-0 flex items-center">
+                <input
+                  ref={commandInputRef}
+                  type="text"
+                  value={command}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setCommand(val);
+                    setActiveSuggestionIndex(0);
+                    setIsSuggestionsOpen(val.trim().length > 0);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'ArrowDown' && omnibarSuggestions.length > 0) {
+                      e.preventDefault();
+                      setActiveSuggestionIndex((prev) => (prev + 1) % omnibarSuggestions.length);
+                      return;
+                    }
+                    if (e.key === 'ArrowUp' && omnibarSuggestions.length > 0) {
+                      e.preventDefault();
+                      setActiveSuggestionIndex(
+                        (prev) => (prev - 1 + omnibarSuggestions.length) % omnibarSuggestions.length
+                      );
+                      return;
+                    }
+                    if (e.key === 'Escape') {
+                      if (isSuggestionsOpen) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setIsSuggestionsOpen(false);
+                      } else {
+                        setCommand(formatNavigationLabel(position));
+                        commandInputRef.current?.blur();
+                      }
+                    }
+                  }}
+                  onBlur={() => {
+                    setIsSuggestionsOpen(false);
+                    setCommand(formatNavigationLabel(position));
+                  }}
+                  placeholder={
+                    chapterData
+                      ? `${chapterData.bookName} ${chapterData.chapter}`
+                      : `${getBookById(position.bookId)?.name || 'Scripture'} ${position.chapter}`
+                  }
+                  className="w-full bg-transparent border-none outline-none font-sans text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight text-[var(--text-primary)] placeholder-[var(--input-placeholder)] py-1 pr-8 leading-normal select-text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  role="combobox"
+                  aria-expanded={isSuggestionsOpen && omnibarSuggestions.length > 0}
+                  aria-controls="reader-omnibar-suggestions"
+                  aria-activedescendant={
+                    isSuggestionsOpen && omnibarSuggestions[activeSuggestionIndex]
+                      ? `omnibar-option-${omnibarSuggestions[activeSuggestionIndex].id}`
+                      : undefined
+                  }
+                  aria-autocomplete="list"
+                  aria-label="Scripture navigation and search omnibar"
+                />
+                {command && (
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setCommand('');
+                      setIsSuggestionsOpen(false);
+                      setActiveSuggestionIndex(0);
+                      commandInputRef.current?.focus();
+                    }}
+                    className="p-1 text-[var(--text-subtle)] hover:text-[var(--text-primary)] transition-colors cursor-pointer rounded-md shrink-0"
+                    title="Clear search"
+                    aria-label="Clear search"
+                  >
+                    <svg className="w-5 h-5 sm:w-6 sm:h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                )}
+
+                {isSuggestionsOpen && omnibarSuggestions.length > 0 && (
+                  <div
+                    id="reader-omnibar-suggestions"
+                    role="listbox"
+                    aria-label="Scripture suggestions"
+                    onMouseDown={(e) => e.preventDefault()}
+                    className="absolute left-0 right-0 top-full mt-2 z-50 rounded-xl border border-[var(--line-subtle)] bg-[var(--bg-surface)] shadow-lg overflow-hidden py-1"
+                  >
+                    {omnibarSuggestions.map((item, idx) => {
+                      const isActive = idx === activeSuggestionIndex;
+                      return (
+                        <button
+                          key={item.id}
+                          id={`omnibar-option-${item.id}`}
+                          type="button"
+                          role="option"
+                          aria-selected={isActive}
+                          onMouseEnter={() => setActiveSuggestionIndex(idx)}
+                          onClick={() => selectOmnibarSuggestion(item)}
+                          className={`w-full px-3.5 py-2.5 flex items-center text-left font-sans transition-colors cursor-pointer ${
+                            isActive
+                              ? 'bg-[var(--bg-active)] text-[var(--text-primary)]'
+                              : 'text-[var(--text-primary)] hover:bg-[var(--bg-active)]/60'
+                          }`}
+                        >
+                          <span className="text-sm sm:text-base font-medium truncate">
+                            {item.label}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
 
               {/* Forward Button (History Navigation - Right End of Search Bar) */}
               <button
@@ -1373,7 +1540,7 @@ export const App: React.FC = () => {
               </div>
 
               <span
-                className={`text-[11px] font-mono tabular-nums shrink-0 ${
+                className={`text-[11px] font-sans tabular-nums shrink-0 ${
                   planReadingSession.isDayFinished
                     ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
                     : 'text-[var(--text-subtle)]'
@@ -1386,7 +1553,7 @@ export const App: React.FC = () => {
             <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
               {/* Mobile reading progress percentage */}
               <span
-                className={`text-[11px] font-mono tabular-nums md:hidden ${
+                className={`text-[11px] font-sans tabular-nums md:hidden ${
                   planReadingSession.isDayFinished
                     ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
                     : 'text-[var(--text-subtle)]'
@@ -1400,7 +1567,7 @@ export const App: React.FC = () => {
                   <span>✓ Day Finished</span>
                 </span>
               ) : (
-                <span className="text-[var(--text-subtle)] hidden lg:inline text-[11px] font-mono">
+                <span className="text-[var(--text-subtle)] hidden lg:inline text-[11px] font-sans">
                   {planReadingSession.assignedChapters[planReadingSession.currentChapterIndex]?.displayRef}
                 </span>
               )}
@@ -1736,7 +1903,7 @@ export const App: React.FC = () => {
         <nav
           ref={dockNavRef}
           aria-label="App navigation"
-          className={`relative dock-nav-transition dock-nav-animated pointer-events-auto font-sans h-16 p-1.5 flex items-center gap-1 sm:gap-2 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm shrink-0 ${
+          className={`relative dock-nav-transition dock-nav-animated pointer-events-auto font-sans h-16 p-1.5 flex items-center gap-1 sm:gap-2 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm flex-1 min-w-0 md:flex-none md:shrink-0 ${
             currentView === 'notes' ? 'dock-anchored-left' : 'dock-centered'
           }`}
         >
@@ -1757,7 +1924,7 @@ export const App: React.FC = () => {
             ref={readerBtnRef}
             type="button"
             onClick={() => setCurrentView('reader')}
-            className={`relative z-10 min-w-[58px] sm:min-w-[66px] md:min-w-[72px] h-[50px] px-2.5 sm:px-3 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`relative z-10 min-w-0 flex-1 md:flex-none md:min-w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'reader'
                 ? 'text-[var(--bg-app)]'
                 : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'
@@ -1788,7 +1955,7 @@ export const App: React.FC = () => {
             ref={plansBtnRef}
             type="button"
             onClick={() => setCurrentView('plans')}
-            className={`relative z-10 min-w-[58px] sm:min-w-[66px] md:min-w-[72px] h-[50px] px-2.5 sm:px-3 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`relative z-10 min-w-0 flex-1 md:flex-none md:min-w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'plans'
                 ? 'text-[var(--bg-app)]'
                 : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'
@@ -1822,7 +1989,7 @@ export const App: React.FC = () => {
             ref={notesBtnRef}
             type="button"
             onClick={() => setCurrentView('notes')}
-            className={`relative z-10 min-w-[58px] sm:min-w-[66px] md:min-w-[72px] h-[50px] px-2.5 sm:px-3 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`relative z-10 min-w-0 flex-1 md:flex-none md:min-w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'notes'
                 ? 'text-[var(--bg-app)]'
                 : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'
@@ -1853,7 +2020,7 @@ export const App: React.FC = () => {
             ref={settingsBtnRef}
             type="button"
             onClick={() => setCurrentView('settings')}
-            className={`relative z-10 min-w-[58px] sm:min-w-[66px] md:min-w-[72px] h-[50px] px-2.5 sm:px-3 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`relative z-10 min-w-0 flex-1 md:flex-none md:min-w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'settings'
                 ? 'text-[var(--bg-app)]'
                 : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'
@@ -1885,7 +2052,7 @@ export const App: React.FC = () => {
         <div
           className={`dock-action-wrapper overflow-visible flex items-center justify-center shrink-0 ${
             currentView === 'notes'
-              ? 'w-16 ml-0 lg:ml-3 sm:lg:ml-4 opacity-100 scale-100 translate-x-0 pointer-events-auto'
+              ? 'w-16 ml-3 md:ml-0 lg:ml-3 sm:lg:ml-4 opacity-100 scale-100 translate-x-0 pointer-events-auto'
               : 'w-0 ml-0 opacity-0 scale-50 translate-x-3 pointer-events-none'
           }`}
           aria-hidden={currentView !== 'notes'}
@@ -1946,6 +2113,20 @@ export const App: React.FC = () => {
       <AboutModal
         isOpen={isAboutOpen}
         onClose={() => setIsAboutOpen(false)}
+      />
+
+      {/* Confirmation Prompt before soft-deleting a verse note */}
+      <ConfirmModal
+        isOpen={pendingDeleteVerse !== null}
+        onClose={() => setPendingDeleteVerse(null)}
+        onConfirm={handleConfirmDeleteVerseNote}
+        title="Delete note?"
+        message={
+          pendingDeleteVerse !== null && chapterData
+            ? `Move your note on ${chapterData.bookName} ${chapterData.chapter}:${pendingDeleteVerse} to Deleted notes? It will be excluded from search and Intelligent Summaries, and retained for 30 days before permanent removal.`
+            : 'Move this note to Deleted notes? It will be retained for 30 days before permanent removal.'
+        }
+        confirmLabel="Delete Note"
       />
     </div>
   );

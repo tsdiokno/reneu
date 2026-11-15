@@ -414,6 +414,7 @@ function noteToRow(note: CommentaryNote, userId?: string | null) {
     practical_application: note.practicalApplication ?? null,
     created_at: Number(note.createdAt) || Date.now(),
     updated_at: Number(note.updatedAt) || Date.now(),
+    deleted_at: note.deletedAt != null ? Number(note.deletedAt) : null,
   };
 
   if (userId) {
@@ -448,7 +449,24 @@ function rowToNote(row: any): CommentaryNote {
     practicalApplication: row.practical_application || undefined,
     createdAt: Number(row.created_at) || Date.now(),
     updatedAt: Number(row.updated_at) || Date.now(),
+    deletedAt: row.deleted_at != null ? Number(row.deleted_at) : undefined,
   };
+}
+
+/**
+ * Upserts note rows while gracefully handling deployments whose Supabase schema
+ * has not yet added the optional `deleted_at` column.
+ */
+async function upsertNoteRowsResilient(client: SupabaseClient, rows: Record<string, any>[]) {
+  const { error } = await client.from('notes').upsert(rows, { onConflict: 'id' });
+  if (error && error.message && error.message.includes('deleted_at')) {
+    const activeOnly = rows
+      .filter((r) => r.deleted_at == null)
+      .map(({ deleted_at: _omit, ...rest }) => rest);
+    if (activeOnly.length === 0) return { error: null };
+    return await client.from('notes').upsert(activeOnly, { onConflict: 'id' });
+  }
+  return { error };
 }
 
 // Memory buffers for debouncing background cloud writes
@@ -501,7 +519,7 @@ export async function flushPendingCloudSync(): Promise<void> {
     const syncableNotes = notesToFlush.filter((n) => !n.id.startsWith('seed-'));
     if (syncableNotes.length > 0) {
       const rows = syncableNotes.map((n) => noteToRow(n, userId));
-      await client.from('notes').upsert(rows, { onConflict: 'id' });
+      await upsertNoteRowsResilient(client, rows);
     }
 
     if (settingsToFlush.length > 0) {
@@ -559,7 +577,7 @@ export async function pushNoteToCloud(note: CommentaryNote): Promise<void> {
         return;
       }
       const row = noteToRow(queuedNote, userId);
-      await client.from('notes').upsert(row, { onConflict: 'id' });
+      await upsertNoteRowsResilient(client, [row]);
     } catch (err) {
       console.debug('Background Supabase note sync skipped:', err);
     }
@@ -709,7 +727,7 @@ export async function syncAllWithCloud(): Promise<SyncResult> {
       const batchSize = 50;
       for (let i = 0; i < localNotes.length; i += batchSize) {
         const batch = localNotes.slice(i, i + batchSize).map((n) => noteToRow(n, userId));
-        const { error: pushErr } = await client.from('notes').upsert(batch, { onConflict: 'id' });
+        const { error: pushErr } = await upsertNoteRowsResilient(client, batch);
         if (pushErr) {
           throw new Error(`Failed pushing notes to Supabase: ${pushErr.message}`);
         }

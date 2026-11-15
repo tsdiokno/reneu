@@ -205,6 +205,323 @@ export function parseOmnibarAction(
   return null;
 }
 
+export function formatNavigationLabel(target: NavigationTarget): string {
+  const book = getBookById(target.bookId);
+  const name = book?.name || 'Genesis';
+  return target.verse ? `${name} ${target.chapter}:${target.verse}` : `${name} ${target.chapter}`;
+}
+
+export interface OmnibarSuggestion {
+  id: string;
+  label: string;
+  sublabel: string;
+  target: NavigationTarget;
+  score: number;
+}
+
+interface BookSearchEntry {
+  id: number;
+  name: string;
+  lowerName: string;
+  normName: string;
+  words: string[];
+  aliases: string[];
+  chapterCount: number;
+  testamentLabel: string;
+}
+
+const BOOK_SEARCH_INDEX: BookSearchEntry[] = CANONICAL_BOOKS.map((book) => {
+  const aliases = Object.entries(BOOK_ALIAS_MAP)
+    .filter(([, id]) => id === book.id)
+    .map(([alias]) => alias);
+  const lowerName = book.name.toLowerCase();
+  return {
+    id: book.id,
+    name: book.name,
+    lowerName,
+    normName: lowerName.replace(/\s+/g, ''),
+    words: lowerName.split(/\s+/),
+    aliases: Array.from(new Set(aliases)),
+    chapterCount: book.chapterCount,
+    testamentLabel: book.testament === 'OT' ? 'Old Testament' : 'New Testament',
+  };
+});
+
+/**
+ * Optimal string alignment / Damerau-Levenshtein distance for fast typo tolerance.
+ */
+function damerauLevenshtein(a: string, b: string): number {
+  const alen = a.length;
+  const blen = b.length;
+  if (alen === 0) return blen;
+  if (blen === 0) return alen;
+
+  const dp: number[][] = Array.from({ length: alen + 1 }, () => new Array<number>(blen + 1).fill(0));
+  for (let i = 0; i <= alen; i++) dp[i][0] = i;
+  for (let j = 0; j <= blen; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= alen; i++) {
+    for (let j = 1; j <= blen; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let val = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        val = Math.min(val, dp[i - 2][j - 2] + cost);
+      }
+      dp[i][j] = val;
+    }
+  }
+  return dp[alen][blen];
+}
+
+function subsequenceGapScore(query: string, target: string): number | null {
+  if (query.length < 2 || query.length > target.length) return null;
+  let qi = 0;
+  let lastMatch = -1;
+  let totalGap = 0;
+  for (let ti = 0; ti < target.length && qi < query.length; ti++) {
+    if (target[ti] === query[qi]) {
+      if (lastMatch !== -1) {
+        totalGap += ti - lastMatch - 1;
+      } else {
+        totalGap += ti * 2;
+      }
+      lastMatch = ti;
+      qi++;
+    }
+  }
+  return qi === query.length ? totalGap : null;
+}
+
+function scoreBookQuery(rawBookQuery: string, entry: BookSearchEntry): number {
+  const lowerQuery = rawBookQuery.trim().toLowerCase();
+  const normQuery = lowerQuery.replace(/[\s.]+/g, '');
+  if (!normQuery) return 0;
+
+  if (entry.normName === normQuery || entry.aliases.includes(normQuery)) {
+    return 1000;
+  }
+
+  if (entry.normName.startsWith(normQuery)) {
+    return 920 - (entry.normName.length - normQuery.length);
+  }
+
+  // Word prefix match (e.g. "cor" -> "1 Corinthians", "songs" -> "Song of Songs")
+  for (let i = 0; i < entry.words.length; i++) {
+    const w = entry.words[i];
+    if (w.startsWith(normQuery)) {
+      return 840 - i * 20 - (w.length - normQuery.length);
+    }
+  }
+
+  // Alias prefix match (e.g. "jn" -> John, "ps" -> Psalms)
+  for (const alias of entry.aliases) {
+    if (alias.startsWith(normQuery)) {
+      return 800 - (alias.length - normQuery.length);
+    }
+  }
+
+  // Substring match
+  const containsIdx = entry.normName.indexOf(normQuery);
+  if (containsIdx !== -1 && normQuery.length >= 2) {
+    return 680 - containsIdx * 10 - (entry.normName.length - normQuery.length);
+  }
+
+  if (normQuery.length < 3) {
+    // Allow ordered subsequence for 2-char abbreviations like "jn" -> John
+    const gap = subsequenceGapScore(normQuery, entry.normName);
+    if (gap !== null && gap <= 3) {
+      return 520 - gap * 25;
+    }
+    return 0;
+  }
+
+  const maxDist = normQuery.length <= 4 ? 1 : normQuery.length <= 7 ? 2 : 3;
+  let bestFuzzy = 0;
+
+  // Check edit distance against full canonical name
+  if (Math.abs(entry.normName.length - normQuery.length) <= maxDist + 2) {
+    const dist = damerauLevenshtein(normQuery, entry.normName);
+    if (dist <= maxDist) {
+      bestFuzzy = Math.max(bestFuzzy, 640 - dist * 110 - Math.abs(entry.normName.length - normQuery.length) * 5);
+    }
+  }
+
+  // Check edit distance against prefix of canonical name (for partial typos like "gnes" -> "genesis")
+  if (entry.normName.length > normQuery.length) {
+    const prefixSlice = entry.normName.slice(0, normQuery.length);
+    const prefixDist = damerauLevenshtein(normQuery, prefixSlice);
+    if (prefixDist <= Math.min(2, maxDist)) {
+      bestFuzzy = Math.max(bestFuzzy, 610 - prefixDist * 110 - (entry.normName.length - normQuery.length) * 2);
+    }
+  }
+
+  // Check edit distance against word tokens (e.g. "corintians" -> "1 Corinthians", "samuel" typos)
+  for (const w of entry.words) {
+    if (w.length >= 3 && Math.abs(w.length - normQuery.length) <= maxDist) {
+      const wDist = damerauLevenshtein(normQuery, w);
+      if (wDist <= maxDist) {
+        bestFuzzy = Math.max(bestFuzzy, 590 - wDist * 110);
+      }
+    }
+  }
+
+  // Check edit distance against common aliases (length >= 3)
+  for (const alias of entry.aliases) {
+    if (alias.length >= 3 && Math.abs(alias.length - normQuery.length) <= 1) {
+      const aDist = damerauLevenshtein(normQuery, alias);
+      if (aDist <= 1) {
+        bestFuzzy = Math.max(bestFuzzy, 575 - aDist * 100);
+      }
+    }
+  }
+
+  if (bestFuzzy > 0) return bestFuzzy;
+
+  // Ordered subsequence fallback (e.g. "gnsis" -> "genesis")
+  const subseqGap = subsequenceGapScore(normQuery, entry.normName);
+  if (subseqGap !== null && subseqGap <= 5) {
+    return 440 - subseqGap * 20;
+  }
+
+  return 0;
+}
+
+export function getOmnibarSuggestions(
+  rawInput: string,
+  currentBookId: number,
+  currentChapter: number,
+  limit = 7
+): OmnibarSuggestion[] {
+  const input = rawInput.trim();
+  if (!input || input.startsWith('/')) return [];
+
+  const lower = input.toLowerCase();
+  const results: OmnibarSuggestion[] = [];
+  const currentBook = getBookById(currentBookId);
+
+  // Skip suggestions for exact theme keywords
+  if (['parchment', 'white', 'light', 'black', 'dark'].includes(lower)) {
+    return [];
+  }
+
+  // Next / Prev helpers
+  if (lower === 'next' || lower === 'n' || lower === '+') {
+    const next = parseOmnibarCommand('next', currentBookId, currentChapter);
+    if (next) {
+      const nextBook = getBookById(next.bookId);
+      results.push({
+        id: `next-${next.bookId}-${next.chapter}`,
+        label: `${nextBook.name} ${next.chapter}`,
+        sublabel: 'Next chapter',
+        target: next,
+        score: 990,
+      });
+    }
+  } else if (lower === 'prev' || lower === 'previous' || lower === 'p' || lower === '-') {
+    const prev = parseOmnibarCommand('prev', currentBookId, currentChapter);
+    if (prev) {
+      const prevBook = getBookById(prev.bookId);
+      results.push({
+        id: `prev-${prev.bookId}-${prev.chapter}`,
+        label: `${prevBook.name} ${prev.chapter}`,
+        sublabel: 'Previous chapter',
+        target: prev,
+        score: 990,
+      });
+    }
+  }
+
+  // Pure digit input (e.g. "2" -> Current Book Ch. 2 + numbered books "2 Samuel", etc.)
+  if (/^\d+$/.test(input)) {
+    const num = parseInt(input, 10);
+    if (num >= 1 && num <= currentBook.chapterCount) {
+      results.push({
+        id: `curr-ch-${currentBookId}-${num}`,
+        label: `${currentBook.name} ${num}`,
+        sublabel: `Chapter ${num} of ${currentBook.chapterCount}`,
+        target: { bookId: currentBookId, chapter: num },
+        score: 960,
+      });
+    }
+    if (num >= 1 && num <= 3) {
+      for (const entry of BOOK_SEARCH_INDEX) {
+        if (entry.normName.startsWith(String(num))) {
+          results.push({
+            id: `book-${entry.id}-1`,
+            label: `${entry.name} 1`,
+            sublabel: `${entry.testamentLabel} · ${entry.chapterCount} ${entry.chapterCount === 1 ? 'chapter' : 'chapters'}`,
+            target: { bookId: entry.id, chapter: 1 },
+            score: 850 - entry.id,
+          });
+        }
+      }
+    }
+    return results.slice(0, limit);
+  }
+
+  // Parse "<bookPart> [chapter][:verse]"
+  const refMatch = input.match(/^([1-3]?\s*[A-Za-z.\s']+?)\s*(?:(\d+)(?:[:.](\d+))?)?$/);
+  if (!refMatch) {
+    return results.slice(0, limit);
+  }
+
+  const rawBookPart = refMatch[1].trim();
+  const parsedChapter = refMatch[2] ? parseInt(refMatch[2], 10) : null;
+  const parsedVerse = refMatch[3] ? parseInt(refMatch[3], 10) : null;
+
+  if (!rawBookPart) {
+    return results.slice(0, limit);
+  }
+
+  const scored = BOOK_SEARCH_INDEX
+    .map((entry) => ({
+      entry,
+      score: scoreBookQuery(rawBookPart, entry),
+    }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.entry.id - b.entry.id;
+    })
+    .slice(0, limit);
+
+  for (const { entry, score } of scored) {
+    if (parsedChapter !== null) {
+      const safeCh = Math.max(1, Math.min(parsedChapter, entry.chapterCount));
+      const safeVs = parsedVerse !== null ? Math.max(1, parsedVerse) : undefined;
+      const clamped = parsedChapter > entry.chapterCount || parsedChapter < 1;
+      const target: NavigationTarget = {
+        bookId: entry.id,
+        chapter: safeCh,
+        ...(safeVs ? { verse: safeVs } : {}),
+      };
+      results.push({
+        id: `ref-${entry.id}-${safeCh}-${safeVs ?? 0}`,
+        label: safeVs ? `${entry.name} ${safeCh}:${safeVs}` : `${entry.name} ${safeCh}`,
+        sublabel: clamped
+          ? `Clamped to max chapter (${entry.chapterCount})`
+          : `Chapter ${safeCh} of ${entry.chapterCount} · ${entry.testamentLabel}`,
+        target,
+        score,
+      });
+    } else {
+      results.push({
+        id: `book-${entry.id}-1`,
+        label: `${entry.name} 1`,
+        sublabel: `${entry.testamentLabel} · ${entry.chapterCount} ${entry.chapterCount === 1 ? 'chapter' : 'chapters'}`,
+        target: { bookId: entry.id, chapter: 1 },
+        score,
+      });
+    }
+  }
+
+  return results.slice(0, limit);
+}
+
 export function parseScriptureReference(ref: string): NavigationTarget | null {
   const clean = ref.replace(/[\[\]()]/g, '').trim();
   return parseOmnibarCommand(clean, 1, 1);

@@ -3,7 +3,7 @@ import React, { useRef } from 'react';
 export type SortField = 'date' | 'book' | 'length';
 export type SortDirection = 'asc' | 'desc';
 export type DatePreset = 'all' | '7d' | '30d' | 'custom';
-export type NoteTypeFilter = 'all' | 'scripture' | 'plain' | 'synthesis';
+export type NoteTypeFilter = 'all' | 'scripture' | 'plain' | 'synthesis' | 'deleted';
 
 export interface NotesFilterState {
   sortField: SortField;
@@ -105,6 +105,8 @@ export const NotesFilterToolbar: React.FC<NotesFilterToolbarProps> = ({
         return 'Plain Notes';
       case 'synthesis':
         return 'Intelligent Summaries';
+      case 'deleted':
+        return 'Deleted notes';
       default:
         return 'All Types';
     }
@@ -160,7 +162,7 @@ export const NotesFilterToolbar: React.FC<NotesFilterToolbarProps> = ({
                 <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
               </svg>
               <span className="truncate flex-1 text-left">{getBookDropdownLabel()}</span>
-              <span className="font-mono text-xs opacity-60 shrink-0">▾</span>
+              <span className="font-sans text-xs opacity-60 shrink-0">▾</span>
             </button>
             <select
               value={filters.selectedBookIds.length === 1 ? filters.selectedBookIds[0] : ''}
@@ -212,7 +214,7 @@ export const NotesFilterToolbar: React.FC<NotesFilterToolbarProps> = ({
                 <line x1="3" y1="10" x2="21" y2="10" />
               </svg>
               <span className="truncate flex-1 text-left">{getDateLabel()}</span>
-              <span className="font-mono text-xs opacity-60 shrink-0">▾</span>
+              <span className="font-sans text-xs opacity-60 shrink-0">▾</span>
             </button>
             <select
               value={filters.datePreset}
@@ -266,7 +268,7 @@ export const NotesFilterToolbar: React.FC<NotesFilterToolbarProps> = ({
               <span className="truncate flex-1 text-left">
                 {getNoteTypeLabel()}
               </span>
-              <span className="font-mono text-xs opacity-60 shrink-0">▾</span>
+              <span className="font-sans text-xs opacity-60 shrink-0">▾</span>
             </button>
             <select
               value={filters.noteType}
@@ -280,6 +282,7 @@ export const NotesFilterToolbar: React.FC<NotesFilterToolbarProps> = ({
               <option value="scripture" className="bg-[var(--bg-surface)] text-[var(--text-primary)] font-sans">Type: Passage Verses</option>
               <option value="plain" className="bg-[var(--bg-surface)] text-[var(--text-primary)] font-sans">Type: Plain Notes</option>
               <option value="synthesis" className="bg-[var(--bg-surface)] text-[var(--text-primary)] font-sans">Type: Intelligent Summaries</option>
+              <option value="deleted" className="bg-[var(--bg-surface)] text-[var(--text-primary)] font-sans">Type: Deleted notes</option>
             </select>
           </div>
 
@@ -307,7 +310,7 @@ export const NotesFilterToolbar: React.FC<NotesFilterToolbarProps> = ({
                   <line x1="4" y1="18" x2="8" y2="18" />
                 </svg>
                 <span className="truncate flex-1 text-left">{getSortLabel()}</span>
-                <span className="font-mono text-xs opacity-60 shrink-0">▾</span>
+                <span className="font-sans text-xs opacity-60 shrink-0">▾</span>
               </button>
               <select
                 value={currentSortCombined}
@@ -374,14 +377,16 @@ export const NotesFilterToolbar: React.FC<NotesFilterToolbarProps> = ({
         </div>
 
         {/* Counter */}
-        <span className="font-mono text-xs opacity-60 shrink-0">
-          {filteredCount} / {totalNotesCount} notes
+        <span className="font-sans text-xs opacity-60 shrink-0">
+          {filters.noteType === 'deleted'
+            ? `${filteredCount} deleted ${filteredCount === 1 ? 'note' : 'notes'}`
+            : `${filteredCount} / ${totalNotesCount} notes`}
         </span>
       </div>
 
       {/* Native Browser Date Picker Inputs (Invoked when Date: Custom Range is active) */}
       {filters.datePreset === 'custom' && (
-        <div className="flex flex-wrap items-center gap-2 pt-1 font-mono text-xs text-[var(--text-subtle)] animate-fade-in">
+        <div className="flex flex-wrap items-center gap-2 pt-1 font-sans text-xs text-[var(--text-subtle)] animate-fade-in">
           <span className="opacity-60">Range:</span>
           <div className="relative inline-flex items-center">
             <input
