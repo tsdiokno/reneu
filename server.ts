@@ -2,16 +2,16 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
-import { cleanNaturalSynthesis } from './src/utils/synthesisText';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { cleanNaturalSynthesis } from './src/utils/synthesisText.js';
 import {
   SynthesisSkill,
   getRuntimeSkills,
   formatSkillsForSystemPrompt,
-} from './src/skills/runtimeSkills';
+} from './src/skills/runtimeSkills.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __filename = typeof import.meta?.url === 'string' ? fileURLToPath(import.meta.url) : '';
+const __dirname = __filename ? path.dirname(__filename) : process.cwd();
 
 const app = express();
 
@@ -91,7 +91,7 @@ function createRateLimiter(options: { maxRequests: number; windowMs: number; mes
 
   return (req: Request, res: Response, next: () => void) => {
     // Rely on req.ip secured via app.set('trust proxy', 1) to prevent header spoofing (CWE-290)
-    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const clientIp = req.ip || req.socket?.remoteAddress || 'unknown';
 
     const now = Date.now();
     let record = ipBuckets.get(clientIp);
@@ -302,6 +302,35 @@ app.get('/api/system/status', (req: Request, res: Response) => {
   });
 });
 
+function parseGeminiApiError(err: any): { statusCode: number; message: string } {
+  const rawMessage = typeof err?.message === 'string' ? err.message : String(err || '');
+  let parsedMessage = rawMessage;
+  let apiCode = typeof err?.status === 'number' ? err.status : 0;
+
+  try {
+    const jsonStart = rawMessage.indexOf('{');
+    if (jsonStart !== -1) {
+      const parsed = JSON.parse(rawMessage.slice(jsonStart));
+      if (parsed?.error?.message) {
+        parsedMessage = String(parsed.error.message);
+      }
+      if (typeof parsed?.error?.code === 'number') {
+        apiCode = parsed.error.code;
+      }
+    }
+  } catch {
+    // Keep rawMessage when not JSON
+  }
+
+  if (apiCode === 400 || apiCode === 401 || apiCode === 403 || apiCode === 404 || apiCode === 429) {
+    return { statusCode: apiCode, message: parsedMessage || 'Could not verify key with Gemini API.' };
+  }
+  return {
+    statusCode: 400,
+    message: parsedMessage || 'Could not verify key with Gemini API.',
+  };
+}
+
 // POST /api/test-gemini-key - Validates user's Gemini API key with a fast, lightweight ping
 app.post('/api/test-gemini-key', geminiKeyTestLimiter, async (req: Request, res: Response) => {
   const userApiKey = extractApiKey(req);
@@ -322,26 +351,26 @@ app.post('/api/test-gemini-key', geminiKeyTestLimiter, async (req: Request, res:
   }
 
   try {
-    const candidateModels = [
-      'gemini-3.8-flash',
-      'gemini-3.7-flash',
-      'gemini-3.5-flash',
-      'gemini-flash-lite-latest',
+    const candidateModels: Array<{ model: string; thinkingLevel: ThinkingLevel }> = [
+      { model: 'gemini-4-hydrogen', thinkingLevel: ThinkingLevel.LOW },
+      { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL },
     ];
     let verifiedModel: string | null = null;
     let lastError: any = null;
 
-    for (const model of candidateModels) {
+    for (const { model, thinkingLevel } of candidateModels) {
       try {
         const response = await ai.models.generateContent({
           model,
-          contents: 'OK',
+          contents: 'Reply with OK.',
           config: {
-            maxOutputTokens: 2,
-            temperature: 0.1,
+            thinkingConfig: { thinkingLevel },
           },
         });
-        if (response.text && response.text.trim().length > 0) {
+        if (
+          (response.text && response.text.trim().length > 0) ||
+          Boolean(response.candidates && response.candidates.length > 0)
+        ) {
           verifiedModel = model;
           break;
         }
@@ -358,11 +387,13 @@ app.post('/api/test-gemini-key', geminiKeyTestLimiter, async (req: Request, res:
       });
     }
 
-    return res.status(400).json({
+    const parsedErr = parseGeminiApiError(lastError);
+    return res.status(parsedErr.statusCode).json({
       success: false,
-      message: lastError?.message || 'Could not verify key with Gemini API.',
+      message: parsedErr.message,
     });
   } catch (err: any) {
+    console.error('Unexpected error in /api/test-gemini-key:', err);
     return res.status(500).json({
       success: false,
       message: err?.message || 'Verification request failed.',
@@ -631,25 +662,22 @@ ${notesText}
 
 Synthesize the underlying trajectory into a concise, simple, and personal 2-3 sentence statement with inline [Reference] citations, strictly adhering to the authoritative synthesis skills. Ensure the composition is completely natural and fluid—avoid mechanical listing, opening with "looking across [1] and [2]", or clumping citation brackets together.`;
 
-    const candidateModels = [
-      'gemini-3.8-flash',
-      'gemini-3.7-flash',
-      'gemini-3.5-flash',
-      'gemini-flash-lite-latest',
+    const candidateModels: Array<{ model: string; thinkingLevel: ThinkingLevel }> = [
+      { model: 'gemini-4-hydrogen', thinkingLevel: ThinkingLevel.LOW },
+      { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL },
     ];
     let responseText: string | null = null;
     let lastError: any = null;
-    let usedModel = candidateModels[0];
+    let usedModel = candidateModels[0].model;
 
-    for (const modelName of candidateModels) {
+    for (const { model: modelName, thinkingLevel } of candidateModels) {
       try {
         const response = await ai.models.generateContent({
           model: modelName,
           contents: userPrompt,
           config: {
             systemInstruction,
-            temperature: 0.4,
-            maxOutputTokens: 500,
+            thinkingConfig: { thinkingLevel },
             responseMimeType: 'application/json',
             responseSchema: {
               type: Type.OBJECT,
@@ -773,6 +801,17 @@ app.get('/sw.js', (_req: Request, res: Response, next) => {
     return res.sendFile(swPath);
   }
   next();
+});
+
+// Ensure /api/* errors always return structured JSON
+app.use('/api', (err: any, _req: Request, res: Response, _next: any) => {
+  console.error('Unhandled /api error:', err);
+  const status = typeof err?.status === 'number' && err.status >= 400 ? err.status : 500;
+  res.status(status).json({
+    success: false,
+    error: err?.message || 'Internal server error.',
+    message: err?.message || 'Internal server error.',
+  });
 });
 
 // Vite or static serving

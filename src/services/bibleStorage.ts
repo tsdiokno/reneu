@@ -377,7 +377,8 @@ export async function testGeminiApiKey(customKey?: string): Promise<{
   message: string;
   model?: string;
 }> {
-  const effectiveKey = customKey !== undefined ? customKey.trim() : (await getGeminiApiKey());
+  const rawKey = customKey !== undefined ? customKey : await getGeminiApiKey();
+  const effectiveKey = rawKey.trim().replace(/^["']|["']$/g, '').trim();
   if (!effectiveKey) {
     return {
       success: false,
@@ -386,12 +387,15 @@ export async function testGeminiApiKey(customKey?: string): Promise<{
   }
 
   try {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (/^[\x21-\x7E]+$/.test(effectiveKey)) {
+      headers['x-gemini-api-key'] = effectiveKey;
+    }
     const res = await fetch('/api/test-gemini-key', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-gemini-api-key': effectiveKey,
-      },
+      headers,
       body: JSON.stringify({ apiKey: effectiveKey }),
     });
 

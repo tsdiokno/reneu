@@ -191,54 +191,68 @@ export const App: React.FC = () => {
 
   const commandInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Sliding active background indicator for dock items
-  const [dockIndicator, setDockIndicator] = useState<{ left: number; width: number }>({ left: 6, width: 58 });
+  // Active dock tab index & FLIP slide animation (resize geometry stays locked in CSS)
+  const dockIndicatorRef = useRef<HTMLDivElement>(null);
+  const dockSlideAnimRef = useRef<Animation | null>(null);
+  const prevViewRef = useRef(currentView);
   const dockNavRef = useRef<HTMLElement>(null);
   const readerBtnRef = useRef<HTMLButtonElement>(null);
   const plansBtnRef = useRef<HTMLButtonElement>(null);
   const notesBtnRef = useRef<HTMLButtonElement>(null);
   const settingsBtnRef = useRef<HTMLButtonElement>(null);
 
+  const activeDockIndex =
+    currentView === 'reader'
+      ? 0
+      : currentView === 'plans'
+      ? 1
+      : currentView === 'notes'
+      ? 2
+      : 3;
+
   useLayoutEffect(() => {
-    const updateIndicator = () => {
-      const activeEl =
-        currentView === 'reader'
-          ? readerBtnRef.current
-          : currentView === 'plans'
-          ? plansBtnRef.current
-          : currentView === 'notes'
-          ? notesBtnRef.current
-          : settingsBtnRef.current;
+    const prevView = prevViewRef.current;
+    prevViewRef.current = currentView;
+    if (prevView === currentView) return;
 
-      if (activeEl && activeEl.offsetWidth > 0) {
-        setDockIndicator({
-          left: activeEl.offsetLeft,
-          width: activeEl.offsetWidth,
-        });
-      }
-    };
-
-    updateIndicator();
-    const rafId = requestAnimationFrame(updateIndicator);
-    const timeoutId = setTimeout(updateIndicator, 50);
-
-    window.addEventListener('resize', updateIndicator);
-
-    let resizeObserver: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined' && dockNavRef.current) {
-      resizeObserver = new ResizeObserver(() => {
-        updateIndicator();
-      });
-      resizeObserver.observe(dockNavRef.current);
+    const pillEl = dockIndicatorRef.current;
+    if (!pillEl || typeof pillEl.animate !== 'function') return;
+    if (
+      typeof window !== 'undefined' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
+      return;
     }
 
-    return () => {
-      cancelAnimationFrame(rafId);
-      clearTimeout(timeoutId);
-      window.removeEventListener('resize', updateIndicator);
-      if (resizeObserver) resizeObserver.disconnect();
-    };
-  }, [currentView, isLoading, Boolean(chapterData)]);
+    const getBtnForView = (view: typeof currentView) =>
+      view === 'reader'
+        ? readerBtnRef.current
+        : view === 'plans'
+        ? plansBtnRef.current
+        : view === 'notes'
+        ? notesBtnRef.current
+        : settingsBtnRef.current;
+
+    const prevBtn = getBtnForView(prevView);
+    const nextBtn = getBtnForView(currentView);
+    if (!prevBtn || !nextBtn || nextBtn.offsetWidth === 0) return;
+
+    const deltaX = prevBtn.offsetLeft - nextBtn.offsetLeft;
+    if (Math.abs(deltaX) < 1) return;
+
+    dockSlideAnimRef.current?.cancel();
+    dockSlideAnimRef.current = pillEl.animate(
+      [
+        { transform: `translate3d(${deltaX}px, 0, 0)` },
+        { transform: 'translate3d(0, 0, 0)' },
+      ],
+      {
+        duration: 320,
+        easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
+        fill: 'none',
+      }
+    );
+  }, [currentView]);
 
   // Initial load
   useEffect(() => {
@@ -1903,28 +1917,24 @@ export const App: React.FC = () => {
         <nav
           ref={dockNavRef}
           aria-label="App navigation"
-          className={`relative dock-nav-transition dock-nav-animated pointer-events-auto font-sans h-16 p-1.5 flex items-center gap-1 sm:gap-2 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm flex-1 min-w-0 md:flex-none md:shrink-0 ${
+          style={{ '--dock-active': activeDockIndex } as React.CSSProperties}
+          className={`relative dock-nav-transition dock-nav-animated pointer-events-auto font-sans h-16 p-1.5 flex items-center gap-[var(--dock-gap)] rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm flex-1 min-w-0 md:flex-none md:shrink-0 ${
             currentView === 'notes' ? 'dock-anchored-left' : 'dock-centered'
           }`}
         >
-          {/* Animated Sliding Active Background Indicator */}
-          <div
-            className="absolute top-1.5 left-0 h-[50px] rounded-full bg-[var(--text-primary)] shadow-sm pointer-events-none"
-            style={{
-              transform: `translateX(${dockIndicator.left}px)`,
-              width: `${dockIndicator.width}px`,
-              opacity: 1,
-              transition:
-                'transform 350ms cubic-bezier(0.16, 1, 0.3, 1), width 300ms cubic-bezier(0.16, 1, 0.3, 1)',
-            }}
-            aria-hidden="true"
-          />
+          {/* Active Background Indicator Track (CSS locks slot width/offset during resizes; FLIP handles tab glide) */}
+          <div className="absolute inset-1.5 pointer-events-none" aria-hidden="true">
+            <div
+              ref={dockIndicatorRef}
+              className="dock-indicator-pill absolute top-0 h-[50px] rounded-full bg-[var(--text-primary)] shadow-sm"
+            />
+          </div>
 
           <button
             ref={readerBtnRef}
             type="button"
             onClick={() => setCurrentView('reader')}
-            className={`relative z-10 min-w-0 flex-1 md:flex-none md:min-w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'reader'
                 ? 'text-[var(--bg-app)]'
                 : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'
@@ -1955,7 +1965,7 @@ export const App: React.FC = () => {
             ref={plansBtnRef}
             type="button"
             onClick={() => setCurrentView('plans')}
-            className={`relative z-10 min-w-0 flex-1 md:flex-none md:min-w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'plans'
                 ? 'text-[var(--bg-app)]'
                 : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'
@@ -1989,7 +1999,7 @@ export const App: React.FC = () => {
             ref={notesBtnRef}
             type="button"
             onClick={() => setCurrentView('notes')}
-            className={`relative z-10 min-w-0 flex-1 md:flex-none md:min-w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'notes'
                 ? 'text-[var(--bg-app)]'
                 : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'
@@ -2020,7 +2030,7 @@ export const App: React.FC = () => {
             ref={settingsBtnRef}
             type="button"
             onClick={() => setCurrentView('settings')}
-            className={`relative z-10 min-w-0 flex-1 md:flex-none md:min-w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'settings'
                 ? 'text-[var(--bg-app)]'
                 : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'
