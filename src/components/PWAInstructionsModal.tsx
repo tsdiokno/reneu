@@ -8,6 +8,7 @@ import {
   type BrowserKind,
   type BeforeInstallPromptEvent,
 } from '../utils/usePWAInstall';
+import { ensureFullNetBibleCached } from '../services/offlineBibleCache';
 
 export interface PWAInstructionsModalProps {
   isOpen: boolean;
@@ -70,6 +71,7 @@ export const PWAInstructionsModal: React.FC<PWAInstructionsModalProps> = ({
     try {
       const accepted = await onPromptInstall();
       if (accepted) {
+        void ensureFullNetBibleCached();
         onClose();
       }
     } finally {
@@ -677,7 +679,7 @@ export const PWAInstructionsModal: React.FC<PWAInstructionsModalProps> = ({
           <div>
             <strong className="text-[var(--text-primary)] font-medium">Your data stays safe:</strong>{' '}
             {isInstall
-              ? 'All personal notes, verse reflections, and reading history carry over seamlessly when running as an app.'
+              ? 'All personal notes, verse reflections, and reading history carry over seamlessly, and the full NET Bible is saved locally once installed for true offline reading.'
               : 'Uninstalling removes the standalone app shortcut. Your personal notes remain stored on this device in browser storage and in your cloud sync account.'}
           </div>
         </div>

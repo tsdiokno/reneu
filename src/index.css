@@ -506,7 +506,7 @@ a:focus-visible,
   height: var(--reader-omni-full-h, auto);
   overflow: hidden;
   will-change: height;
-  transition: height 320ms cubic-bezier(0.16, 1, 0.3, 1),
+  transition: height 300ms cubic-bezier(0.16, 1, 0.3, 1),
               border-color 220ms ease,
               box-shadow 220ms ease,
               background-color 220ms ease;
@@ -518,6 +518,10 @@ a:focus-visible,
 
 .reader-omnibar-header.is-compact {
   height: 2.5rem;
+  transition: height 290ms cubic-bezier(0.16, 1, 0.3, 1) 35ms,
+              border-color 220ms ease,
+              box-shadow 220ms ease,
+              background-color 220ms ease;
 }
 
 @media (min-width: 640px) {
@@ -527,16 +531,20 @@ a:focus-visible,
 }
 
 .reader-omnibar-full-layer {
+  opacity: 1;
   transform: translate3d(0, 0, 0) scale(1);
   transform-origin: center top;
   will-change: transform, opacity;
-  transition: opacity 220ms cubic-bezier(0.16, 1, 0.3, 1),
-              transform 280ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 200ms cubic-bezier(0.16, 1, 0.3, 1) 75ms,
+              transform 240ms cubic-bezier(0.16, 1, 0.3, 1) 55ms;
 }
 
 .reader-omnibar-header.is-compact .reader-omnibar-full-layer {
   opacity: 0;
-  transform: translate3d(0, -10px, 0) scale(0.985);
+  transform: translate3d(0, -8px, 0) scale(0.985);
+  pointer-events: none;
+  transition: opacity 120ms cubic-bezier(0.4, 0, 1, 1) 0ms,
+              transform 150ms cubic-bezier(0.4, 0, 1, 1) 0ms;
 }
 
 .reader-omnibar-compact-layer {
@@ -547,15 +555,20 @@ a:focus-visible,
   align-items: center;
   justify-content: center;
   padding-inline: 1rem;
-  transform: translate3d(0, 8px, 0) scale(0.96);
+  opacity: 0;
+  transform: translate3d(0, 6px, 0) scale(0.96);
+  pointer-events: none;
   will-change: transform, opacity;
-  transition: opacity 220ms cubic-bezier(0.16, 1, 0.3, 1),
-              transform 280ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 110ms cubic-bezier(0.4, 0, 1, 1) 0ms,
+              transform 140ms cubic-bezier(0.4, 0, 1, 1) 0ms;
 }
 
 .reader-omnibar-header.is-compact .reader-omnibar-compact-layer {
   opacity: 1;
   transform: translate3d(0, 0, 0) scale(1);
+  pointer-events: auto;
+  transition: opacity 200ms cubic-bezier(0.16, 1, 0.3, 1) 100ms,
+              transform 240ms cubic-bezier(0.16, 1, 0.3, 1) 80ms;
 }
 
 @media (min-width: 640px) {
@@ -570,19 +583,58 @@ a:focus-visible,
   .reader-omnibar-full-layer,
   .reader-omnibar-compact-layer {
     transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
   }
 }
 
 /* Auto-hiding Bottom Navigation Dock Chrome (Reader View) */
 .dock-bottom-chrome {
-  transform: translate3d(0, 0, 0);
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
   backface-visibility: hidden;
-  will-change: transform;
-  transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
+  transition: transform 340ms cubic-bezier(0.16, 1, 0.3, 1) 40ms,
+              opacity 240ms cubic-bezier(0.16, 1, 0.3, 1) 40ms;
 }
 
 .dock-bottom-chrome.is-dock-hidden {
-  transform: translate3d(0, calc(100% + 2.5rem + env(safe-area-inset-bottom, 0px)), 0);
+  opacity: 0;
+  transform: translate3d(0, calc(100% + 2.5rem + env(safe-area-inset-bottom, 0px)), 0) scale(0.96);
+  transition: transform 320ms cubic-bezier(0.4, 0, 1, 1) 60ms,
+              opacity 220ms cubic-bezier(0.4, 0, 1, 1) 80ms;
+}
+
+.dock-bottom-chrome .dock-nav-item,
+.dock-bottom-chrome .dock-indicator-track {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  will-change: transform, opacity;
+  transition: opacity 200ms cubic-bezier(0.16, 1, 0.3, 1) 110ms,
+              transform 240ms cubic-bezier(0.16, 1, 0.3, 1) 110ms,
+              color 200ms ease,
+              background-color 200ms ease;
+}
+
+.dock-bottom-chrome:not(.is-dock-hidden) .dock-nav-item:hover {
+  transform: translate3d(0, 0, 0) scale(1.05);
+  transition-duration: 180ms, 180ms, 200ms, 200ms;
+  transition-delay: 0ms, 0ms, 0ms, 0ms;
+}
+
+.dock-bottom-chrome:not(.is-dock-hidden) .dock-nav-item:active {
+  transform: translate3d(0, 0, 0) scale(0.95);
+  transition-duration: 120ms, 120ms, 200ms, 200ms;
+  transition-delay: 0ms, 0ms, 0ms, 0ms;
+}
+
+.dock-bottom-chrome.is-dock-hidden .dock-nav-item,
+.dock-bottom-chrome.is-dock-hidden .dock-indicator-track {
+  opacity: 0;
+  transform: translate3d(0, 6px, 0) scale(0.94);
+  transition: opacity 150ms cubic-bezier(0.4, 0, 1, 1) 0ms,
+              transform 180ms cubic-bezier(0.4, 0, 1, 1) 0ms,
+              color 200ms ease,
+              background-color 200ms ease;
 }
 
 .dock-bottom-chrome.is-dock-hidden * {
@@ -610,8 +662,11 @@ a:focus-visible,
 
 @media (prefers-reduced-motion: reduce) {
   .dock-bottom-chrome,
+  .dock-bottom-chrome .dock-nav-item,
+  .dock-bottom-chrome .dock-indicator-track,
   .reader-chapter-arrows {
     transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
   }
 }
 

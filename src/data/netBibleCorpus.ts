@@ -5,7 +5,13 @@ import { db } from '../services/db';
 export async function fetchChapterData(bookId: number, chapter: number): Promise<ChapterData> {
   const cacheKey = `${bookId}-${chapter}`;
   const cached = await db.chapters.get(cacheKey);
-  if (cached) {
+  if (
+    cached &&
+    Array.isArray(cached.verses) &&
+    cached.verses.length > 0 &&
+    !cached.verses[0]?.text?.startsWith('[Network Error:') &&
+    !cached.verses[0]?.text?.startsWith("Couldn't load ")
+  ) {
     return cached;
   }
 
@@ -57,7 +63,7 @@ export async function fetchChapterData(bookId: number, chapter: number): Promise
 
   } catch (error) {
     console.error('API Fetch error:', error);
-    // Fallback to a single verse error message if API fails
+    // Fallback message if network or Scripture service fails
     return {
       bookId,
       bookName: book.name,
@@ -69,7 +75,7 @@ export async function fetchChapterData(bookId: number, chapter: number): Promise
           bookName: book.name,
           chapter,
           verse: 1,
-          text: `[Network Error: Unable to fetch ${book.name} ${chapter} from labs.bible.org]`,
+          text: `Couldn't load ${book.name} ${chapter}. Your internet connection may be offline or the Scripture service is temporarily unreachable—check your connection and reload, or report persistent issues in About Reneu.`,
         }
       ]
     };

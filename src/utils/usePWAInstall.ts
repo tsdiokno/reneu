@@ -130,6 +130,11 @@ export function usePWAInstall() {
       setIsInstalled(Boolean(detail));
     };
 
+    const handleInstalledSync = () => {
+      setIsInstalled(true);
+      setDeferredPrompt(null);
+    };
+
     const handleDismissSync = () => {
       try {
         setIsDismissed(localStorage.getItem(INSTALL_DISMISSED_KEY) === 'true');
@@ -139,6 +144,7 @@ export function usePWAInstall() {
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     window.addEventListener('appinstalled', handleAppInstalled);
     window.addEventListener('scripturepage-sim-installed', handleSimInstalled);
+    window.addEventListener('reneu-pwa-installed', handleInstalledSync);
     window.addEventListener('storage', handleDismissSync);
     window.addEventListener('reneu-install-dismissed', handleDismissSync);
 
@@ -146,6 +152,7 @@ export function usePWAInstall() {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
       window.removeEventListener('appinstalled', handleAppInstalled);
       window.removeEventListener('scripturepage-sim-installed', handleSimInstalled);
+      window.removeEventListener('reneu-pwa-installed', handleInstalledSync);
       window.removeEventListener('storage', handleDismissSync);
       window.removeEventListener('reneu-install-dismissed', handleDismissSync);
     };
@@ -159,6 +166,7 @@ export function usePWAInstall() {
       if (outcome === 'accepted') {
         setIsInstalled(true);
         setDeferredPrompt(null);
+        window.dispatchEvent(new CustomEvent('reneu-pwa-installed'));
         return true;
       }
     } catch (err) {

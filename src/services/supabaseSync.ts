@@ -165,6 +165,91 @@ export async function getCurrentUser(): Promise<SupabaseUserProfile | null> {
   }
 }
 
+function formatAuthErrorMessage(
+  err: unknown,
+  action: 'sign-up' | 'sign-in' | 'oauth' | 'sign-out'
+): string {
+  const raw =
+    typeof err === 'string'
+      ? err
+      : err && typeof err === 'object' && 'message' in err && typeof (err as { message?: unknown }).message === 'string'
+        ? (err as { message: string }).message
+        : '';
+  const lower = raw.toLowerCase();
+
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return 'You appear to be offline. Reconnect to the internet and try again—your local notes remain safe on this device.';
+  }
+  if (lower.includes('failed to fetch') || lower.includes('network') || lower.includes('timeout')) {
+    return 'Couldn’t reach the cloud sign-in service. Check your internet connection and try again, or report persistent issues in About Reneu.';
+  }
+  if (lower.includes('invalid login credentials') || lower.includes('invalid credentials')) {
+    return 'Incorrect email or password. Double-check your details and try again.';
+  }
+  if (lower.includes('email not confirmed')) {
+    return 'Your email isn’t confirmed yet. Open the confirmation link in your inbox, then sign in again.';
+  }
+  if (lower.includes('user already registered') || lower.includes('already exists')) {
+    return 'An account with this email already exists. Try signing in instead.';
+  }
+  if (lower.includes('password') && (lower.includes('least') || lower.includes('short') || lower.includes('weak'))) {
+    return 'Password is too weak or short. Use at least 6 characters and try again.';
+  }
+  if (lower.includes('invalid email') || lower.includes('unable to validate email')) {
+    return 'Please enter a valid email address and try again.';
+  }
+  if (lower.includes('rate limit') || lower.includes('too many requests')) {
+    return 'Too many sign-in attempts in a short time. Wait a minute and try again.';
+  }
+  if (lower.includes('popup') || lower.includes('cancel') || lower.includes('access_denied')) {
+    return 'Sign-in wasn’t completed. Try again or choose another sign-in method.';
+  }
+
+  switch (action) {
+    case 'sign-up':
+      return 'Couldn’t create your account right now. Check your details and connection, or report persistent issues in About Reneu.';
+    case 'sign-in':
+      return 'Couldn’t sign you in right now. Check your email, password, and connection, or report persistent issues in About Reneu.';
+    case 'oauth':
+      return 'Couldn’t open external sign-in right now. Check your connection or try email sign-in, and report persistent issues in About Reneu.';
+    case 'sign-out':
+      return 'Couldn’t finish signing out on the server. Check your connection and try again, or report persistent issues in About Reneu.';
+  }
+}
+
+function formatSyncErrorMessage(err: unknown): string {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return 'You’re offline right now. Your notes stay saved locally and will sync when you’re back online.';
+  }
+  const raw =
+    typeof err === 'string'
+      ? err
+      : err && typeof err === 'object' && 'message' in err && typeof (err as { message?: unknown }).message === 'string'
+        ? (err as { message: string }).message
+        : '';
+  const lower = raw.toLowerCase();
+
+  if (lower.includes('failed to fetch') || lower.includes('network') || lower.includes('timeout')) {
+    return 'Couldn’t reach cloud sync—your connection may be unstable. Your notes stay saved locally; try syncing again shortly, or report persistent issues in About Reneu.';
+  }
+  if (
+    lower.includes('jwt') ||
+    lower.includes('expired') ||
+    lower.includes('unauthorized') ||
+    lower.includes('401') ||
+    lower.includes('auth')
+  ) {
+    return 'Your cloud session may have expired. Sign out and sign back in under Settings to resume syncing.';
+  }
+  if (lower.includes('permission') || lower.includes('row-level security') || lower.includes('rls') || lower.includes('403')) {
+    return 'Cloud sync doesn’t have permission for this account session. Sign out and sign back in, or report this in About Reneu.';
+  }
+  if (lower.includes('quota') || lower.includes('storage')) {
+    return 'Local or cloud storage is full or blocked. Free up browser storage and try again, or report persistent issues in About Reneu.';
+  }
+  return 'Cloud sync hit an unexpected snag. Your notes stay safe locally—try syncing again shortly, or report persistent issues in About Reneu.';
+}
+
 /**
  * Registers a new user with email and password.
  * Free tier includes up to 50,000 monthly active users.
@@ -176,7 +261,10 @@ export async function signUpWithEmail(
 ): Promise<{ success: boolean; user?: SupabaseUserProfile; message: string; requiresConfirmation?: boolean }> {
   const client = getSupabaseClient();
   if (!client) {
-    return { success: false, message: 'The central cloud sync service is currently unavailable. Your notes remain safely stored locally on this device.' };
+    return {
+      success: false,
+      message: 'Cloud sign-in isn’t configured right now. Your notes stay saved locally, or let the developer know in About Reneu.',
+    };
   }
   try {
     const { data, error } = await client.auth.signUp({
@@ -185,7 +273,7 @@ export async function signUpWithEmail(
       options: captchaToken ? { captchaToken } : undefined,
     });
     if (error) {
-      return { success: false, message: error.message };
+      return { success: false, message: formatAuthErrorMessage(error, 'sign-up') };
     }
     // If sign-up succeeds with session, disable any lingering logged-out simulation
     if (data.session) {
@@ -201,8 +289,8 @@ export async function signUpWithEmail(
         ? 'Account registered! Please check your email inbox to confirm your address before logging in.'
         : 'Account created and signed in successfully!',
     };
-  } catch (err: any) {
-    return { success: false, message: err?.message || 'Failed to sign up.' };
+  } catch (err: unknown) {
+    return { success: false, message: formatAuthErrorMessage(err, 'sign-up') };
   }
 }
 
@@ -216,7 +304,10 @@ export async function signInWithEmail(
 ): Promise<{ success: boolean; user?: SupabaseUserProfile; message: string }> {
   const client = getSupabaseClient();
   if (!client) {
-    return { success: false, message: 'The central cloud sync service is currently unavailable. Your notes remain safely stored locally.' };
+    return {
+      success: false,
+      message: 'Cloud sign-in isn’t configured right now. Your notes stay saved locally, or let the developer know in About Reneu.',
+    };
   }
   try {
     const { data, error } = await client.auth.signInWithPassword({
@@ -225,7 +316,7 @@ export async function signInWithEmail(
       options: captchaToken ? { captchaToken } : undefined,
     });
     if (error) {
-      return { success: false, message: error.message };
+      return { success: false, message: formatAuthErrorMessage(error, 'sign-in') };
     }
     // Clear any lingering logged-out simulation upon deliberate sign-in
     setSimulateLoggedOut(false);
@@ -235,8 +326,8 @@ export async function signInWithEmail(
       user: profile || undefined,
       message: 'Signed in successfully!',
     };
-  } catch (err: any) {
-    return { success: false, message: err?.message || 'Failed to sign in.' };
+  } catch (err: unknown) {
+    return { success: false, message: formatAuthErrorMessage(err, 'sign-in') };
   }
 }
 
@@ -249,7 +340,10 @@ export async function signInWithOAuth(
 ): Promise<{ success: boolean; message: string }> {
   const client = getSupabaseClient();
   if (!client) {
-    return { success: false, message: 'The central cloud sync service is currently unavailable. Your notes remain safely stored locally.' };
+    return {
+      success: false,
+      message: 'Cloud sign-in isn’t configured right now. Your notes stay saved locally, or let the developer know in About Reneu.',
+    };
   }
   try {
     const redirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
@@ -260,11 +354,11 @@ export async function signInWithOAuth(
       },
     });
     if (error) {
-      return { success: false, message: error.message };
+      return { success: false, message: formatAuthErrorMessage(error, 'oauth') };
     }
     return { success: true, message: `Redirecting to ${provider} sign-in…` };
-  } catch (err: any) {
-    return { success: false, message: err?.message || 'OAuth sign-in initiation failed.' };
+  } catch (err: unknown) {
+    return { success: false, message: formatAuthErrorMessage(err, 'oauth') };
   }
 }
 
@@ -279,11 +373,16 @@ export async function signOutUser(): Promise<{ success: boolean; message: string
   try {
     const { error } = await client.auth.signOut();
     if (error) {
-      return { success: false, message: error.message };
+      return { success: false, message: formatAuthErrorMessage(error, 'sign-out') };
+    }
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem(STORAGE_KEY_LAST_SYNCED);
+      } catch {}
     }
     return { success: true, message: 'Signed out successfully.' };
-  } catch (err: any) {
-    return { success: false, message: err?.message || 'Error during sign out.' };
+  } catch (err: unknown) {
+    return { success: false, message: formatAuthErrorMessage(err, 'sign-out') };
   }
 }
 
@@ -310,12 +409,17 @@ export function onAuthStateChange(callback: (user: SupabaseUserProfile | null) =
   let unsubscribe = () => {};
   if (client) {
     const { data: { subscription } } = client.auth.onAuthStateChange((event, session) => {
-      if (checkSimulateLoggedOut()) {
+      const simLoggedOut = checkSimulateLoggedOut();
+      if (simLoggedOut) {
         callback(null);
       } else {
         callback(mapUserToProfile(session?.user));
       }
-      if (event === 'SIGNED_IN' || event === 'USER_UPDATED') {
+      if (
+        !simLoggedOut &&
+        session?.user &&
+        (event === 'SIGNED_IN' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION')
+      ) {
         void syncAllWithCloud().catch(() => {});
       }
     });
@@ -959,7 +1063,24 @@ export async function pushSettingToCloud(key: string, value: any): Promise<void>
  * 2. Pulls remote notes down, merging newer versions into Dexie.
  * 3. Syncs user settings.
  */
-export async function syncAllWithCloud(): Promise<SyncResult> {
+let activeFullSyncPromise: Promise<SyncResult> | null = null;
+
+export function syncAllWithCloud(): Promise<SyncResult> {
+  if (activeFullSyncPromise) {
+    return activeFullSyncPromise;
+  }
+
+  activeFullSyncPromise = runSyncAllWithCloud().finally(() => {
+    activeFullSyncPromise = null;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('reneu:cloud-sync-end'));
+    }
+  });
+
+  return activeFullSyncPromise;
+}
+
+async function runSyncAllWithCloud(): Promise<SyncResult> {
   const client = getSupabaseClient();
   const now = Date.now();
 
@@ -968,9 +1089,13 @@ export async function syncAllWithCloud(): Promise<SyncResult> {
       success: false,
       notesPushed: 0,
       notesPulled: 0,
-      error: 'Central cloud sync service is currently unavailable.',
+      error: 'Cloud sync isn’t configured right now. Your notes stay saved locally, or let the developer know in About Reneu.',
       timestamp: now,
     };
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('reneu:cloud-sync-start'));
   }
 
   try {
@@ -984,7 +1109,7 @@ export async function syncAllWithCloud(): Promise<SyncResult> {
         success: false,
         notesPushed: 0,
         notesPulled: 0,
-        error: 'Sign in required before syncing notes to cloud.',
+        error: 'Sign in to sync your notes across devices. Local notes stay safe on this device.',
         timestamp: now,
       };
     }
@@ -1276,11 +1401,16 @@ export async function syncAllWithCloud(): Promise<SyncResult> {
       }
     }
 
-    // 5. Record sync timestamp
+    // 5. Record sync timestamp & notify active UI views to refresh synced data
     if (typeof window !== 'undefined') {
       try {
         localStorage.setItem(STORAGE_KEY_LAST_SYNCED, String(now));
       } catch {}
+      window.dispatchEvent(
+        new CustomEvent('reneu:cloud-synced', {
+          detail: { notesPushed, notesPulled, timestamp: now, userId },
+        })
+      );
     }
 
     return {
@@ -1296,7 +1426,7 @@ export async function syncAllWithCloud(): Promise<SyncResult> {
       success: false,
       notesPushed: 0,
       notesPulled: 0,
-      error: err?.message || 'Sync failed due to an unexpected error.',
+      error: formatSyncErrorMessage(err),
       timestamp: now,
     };
   }

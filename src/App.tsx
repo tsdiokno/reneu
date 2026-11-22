@@ -45,9 +45,12 @@ import {
   type OmnibarSuggestion,
 } from './utils/referenceParser';
 import { VerseRow } from './components/VerseRow';
-import { CopiedToast } from './components/CopiedToast';
+import { CopiedToast, type ToastPayload } from './components/CopiedToast';
 import { checkSimulateSplash, checkSimulateLoginSplash } from './utils/devSimulation';
 import { useAutoHideHeader } from './utils/useAutoHideHeader';
+import { useOnlineStatus } from './utils/useOnlineStatus';
+import { usePWAInstall } from './utils/usePWAInstall';
+import { ensureFullNetBibleCached, refreshOfflineBibleProgress } from './services/offlineBibleCache';
 import { getCurrentUser, onAuthStateChange, syncAllWithCloud, type SupabaseUserProfile } from './services/bibleStorage';
 import { NotesViewSkeleton } from './components/NotesViewSkeleton';
 import { SettingsViewSkeleton } from './components/SettingsViewSkeleton';
@@ -114,9 +117,16 @@ export const App: React.FC = () => {
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState<number>(0);
   const [focusedVerse, setFocusedVerse] = useState<number | null>(null);
   const targetScrollVerseRef = useRef<number | null>(null);
+  const pendingTopScrollRef = useRef<boolean>(false);
   const [scrollRequestSeq, setScrollRequestSeq] = useState<number>(0);
   const [exposedNotes, setExposedNotes] = useState<Set<string>>(() => getInitialExposedNotesSync());
-  const [copiedToast, setCopiedToast] = useState<{ reference: string } | null>(null);
+  const [copiedToast, setCopiedToast] = useState<ToastPayload | null>(null);
+  const hasShownOfflineToastRef = useRef<boolean>(false);
+  const lastAutoSyncedUserIdRef = useRef<string | null>(null);
+  const positionRef = useRef<ReadingPosition>(position);
+  positionRef.current = position;
+  const isOnline = useOnlineStatus();
+  const { isInstalled: isPWAInstalled } = usePWAInstall();
   const [isComposingPlainNote, setIsComposingPlainNote] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [appInitialized, setAppInitialized] = useState<boolean>(false);
@@ -131,6 +141,26 @@ export const App: React.FC = () => {
   });
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
   const [pendingDeleteVerse, setPendingDeleteVerse] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!currentUser || isOnline || hasShownOfflineToastRef.current) return;
+    hasShownOfflineToastRef.current = true;
+    setCopiedToast({
+      variant: 'offline',
+      title: 'You are offline.',
+      message: 'Sync will resume when back online.',
+    });
+  }, [currentUser, isOnline]);
+
+  // Persist the entire NET Bible locally once installed as a PWA (resumes automatically if interrupted)
+  useEffect(() => {
+    if (!isPWAInstalled) return;
+    if (!isOnline) {
+      void refreshOfflineBibleProgress();
+      return;
+    }
+    void ensureFullNetBibleCached();
+  }, [isPWAInstalled, isOnline]);
 
   useEffect(() => {
     let mounted = true;
@@ -163,6 +193,41 @@ export const App: React.FC = () => {
       mounted = false;
       unsubscribe();
       window.removeEventListener('scripturepage-sim-login-splash', handleLoginSplashEvent);
+    };
+  }, []);
+
+  // Guarantee automatic bidirectional sync on initial sign-in, OAuth redirect return, or reconnect
+  useEffect(() => {
+    if (!currentUser) {
+      lastAutoSyncedUserIdRef.current = null;
+      return;
+    }
+    if (!isOnline) return;
+    if (lastAutoSyncedUserIdRef.current === currentUser.id) return;
+    lastAutoSyncedUserIdRef.current = currentUser.id;
+    void syncAllWithCloud().catch(() => {});
+  }, [currentUser, isOnline]);
+
+  // Refresh active chapter notes and appearance immediately after cloud sync pulls data
+  useEffect(() => {
+    const handleCloudSynced = async () => {
+      try {
+        const pos = positionRef.current;
+        const [freshNotes, freshAppearance] = await Promise.all([
+          getNotesByChapter(pos.bookId, pos.chapter),
+          getAppearanceSettings(),
+        ]);
+        setNotes(freshNotes);
+        setAppearance(freshAppearance);
+        setTheme(freshAppearance.theme);
+      } catch (err) {
+        console.warn('Could not refresh state after cloud sync:', err);
+      }
+    };
+
+    window.addEventListener('reneu:cloud-synced', handleCloudSynced);
+    return () => {
+      window.removeEventListener('reneu:cloud-synced', handleCloudSynced);
     };
   }, []);
 
@@ -455,7 +520,11 @@ export const App: React.FC = () => {
     if (targetScrollVerseRef.current !== null) {
       const targetVerse = targetScrollVerseRef.current;
       targetScrollVerseRef.current = null;
+      pendingTopScrollRef.current = false;
       scrollVerseToViewportCenter(targetVerse);
+    } else if (pendingTopScrollRef.current) {
+      pendingTopScrollRef.current = false;
+      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
     }
   }, [
     currentView,
@@ -560,6 +629,7 @@ export const App: React.FC = () => {
       }
 
       if (target.verse) {
+        pendingTopScrollRef.current = false;
         targetScrollVerseRef.current = target.verse;
         setFocusedVerse(target.verse);
         const verseKey = `${target.bookId}:${target.chapter}:${target.verse}`;
@@ -573,8 +643,10 @@ export const App: React.FC = () => {
         setScrollRequestSeq((prev) => prev + 1);
       } else {
         targetScrollVerseRef.current = null;
+        pendingTopScrollRef.current = true;
         setFocusedVerse(null);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+        window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+        setScrollRequestSeq((prev) => prev + 1);
       }
     },
     [historyIndex]
@@ -1420,9 +1492,7 @@ export const App: React.FC = () => {
           >
           {/* Compact Shrunk State: Book & Chapter Name Only (tap to expand full omnibar) */}
           <div
-            className={`reader-omnibar-compact-layer ${
-              isReaderOmnibarFull ? 'opacity-0 pointer-events-none' : 'opacity-100 pointer-events-auto'
-            }`}
+            className="reader-omnibar-compact-layer"
             aria-hidden={isReaderOmnibarFull}
           >
             <button
@@ -1441,7 +1511,7 @@ export const App: React.FC = () => {
           <div
             ref={readerFullRowRef}
             className={`reader-omnibar-full-layer pt-4 sm:pt-5 pb-4 px-4 sm:px-8 ${
-              isReaderOmnibarFull ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+              isReaderOmnibarFull ? 'pointer-events-auto' : 'pointer-events-none'
             }`}
             aria-hidden={!isReaderOmnibarFull}
           >
@@ -1706,11 +1776,27 @@ export const App: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setCurrentView('settings')}
-                  className="px-2.5 py-1 rounded-full text-xs font-sans font-medium text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all cursor-pointer flex items-center gap-1.5"
-                  title={`Signed in as ${currentUser.email || 'User'}. Click to view account in Settings.`}
-                  aria-label="Account Settings"
+                  className={`px-2.5 py-1 rounded-full text-xs font-sans font-medium transition-all cursor-pointer flex items-center gap-1.5 ${
+                    isOnline
+                      ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20'
+                      : 'text-yellow-700 dark:text-yellow-300 bg-yellow-500/15 hover:bg-yellow-500/25'
+                  }`}
+                  title={
+                    isOnline
+                      ? `Signed in as ${currentUser.email || 'User'}. Click to view account in Settings.`
+                      : `Offline — not syncing to cloud (${currentUser.email || 'User'}). Changes save locally.`
+                  }
+                  aria-label={
+                    isOnline
+                      ? 'Account Settings'
+                      : 'Account Settings (Offline, not syncing to cloud)'
+                  }
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      isOnline ? 'bg-emerald-500' : 'bg-yellow-500'
+                    }`}
+                  />
                   <span className="hidden sm:inline max-w-[100px] truncate">{currentUser.fullName || currentUser.email?.split('@')[0] || 'Account'}</span>
                 </button>
               ) : (
@@ -2175,7 +2261,7 @@ export const App: React.FC = () => {
             }`}
           >
           {/* Active Background Indicator Track (CSS locks slot width/offset during resizes; FLIP handles tab glide) */}
-          <div className="absolute inset-1.5 pointer-events-none" aria-hidden="true">
+          <div className="dock-indicator-track absolute inset-1.5 pointer-events-none" aria-hidden="true">
             <div
               ref={dockIndicatorRef}
               className="dock-indicator-pill absolute top-0 h-[50px] rounded-full bg-[var(--text-primary)] shadow-sm"
@@ -2185,8 +2271,9 @@ export const App: React.FC = () => {
           <button
             ref={readerBtnRef}
             type="button"
+            tabIndex={currentView === 'reader' && !isReaderOmnibarVisible ? -1 : 0}
             onClick={() => handleSelectTab('reader')}
-            className={`relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`dock-nav-item relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'reader'
                 ? 'text-[var(--bg-app)]'
                 : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'
@@ -2216,8 +2303,9 @@ export const App: React.FC = () => {
           <button
             ref={notesBtnRef}
             type="button"
+            tabIndex={currentView === 'reader' && !isReaderOmnibarVisible ? -1 : 0}
             onClick={() => handleSelectTab('notes')}
-            className={`relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`dock-nav-item relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'notes'
                 ? 'text-[var(--bg-app)]'
                 : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'
@@ -2247,8 +2335,9 @@ export const App: React.FC = () => {
           <button
             ref={plansBtnRef}
             type="button"
+            tabIndex={currentView === 'reader' && !isReaderOmnibarVisible ? -1 : 0}
             onClick={() => handleSelectTab('plans')}
-            className={`relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`dock-nav-item relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'plans'
                 ? 'text-[var(--bg-app)]'
                 : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'
@@ -2281,8 +2370,9 @@ export const App: React.FC = () => {
           <button
             ref={settingsBtnRef}
             type="button"
+            tabIndex={currentView === 'reader' && !isReaderOmnibarVisible ? -1 : 0}
             onClick={() => handleSelectTab('settings')}
-            className={`relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`dock-nav-item relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'settings'
                 ? 'text-[var(--bg-app)]'
                 : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'

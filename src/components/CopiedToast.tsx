@@ -1,7 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 
+export type ToastPayload =
+  | { variant?: 'copied'; reference: string }
+  | { variant: 'offline'; title: string; message: string };
+
 interface CopiedToastProps {
-  toast: { reference: string } | null;
+  toast: ToastPayload | null;
   onDismiss?: () => void;
   duration?: number;
 }
@@ -9,10 +13,13 @@ interface CopiedToastProps {
 export const CopiedToast: React.FC<CopiedToastProps> = ({
   toast,
   onDismiss,
-  duration = 2400,
+  duration,
 }) => {
-  // Pre-loaded in DOM: stores active reference so it never blanks during transition
-  const [displayReference, setDisplayReference] = useState<string>('');
+  // Pre-loaded in DOM: stores active toast payload so it never blanks during transition
+  const [displayToast, setDisplayToast] = useState<ToastPayload>({
+    variant: 'copied',
+    reference: '',
+  });
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [isBumping, setIsBumping] = useState<boolean>(false);
   const [hasEverOpened, setHasEverOpened] = useState<boolean>(false);
@@ -31,7 +38,10 @@ export const CopiedToast: React.FC<CopiedToastProps> = ({
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
       if (openTimerRef.current) clearTimeout(openTimerRef.current);
 
-      setDisplayReference(toast.reference);
+      const effectiveDuration =
+        duration ?? (toast.variant === 'offline' ? 3600 : 2400);
+
+      setDisplayToast(toast);
       setHasEverOpened(true);
 
       if (isOpen) {
@@ -47,7 +57,7 @@ export const CopiedToast: React.FC<CopiedToastProps> = ({
           setTimeout(() => {
             onDismissRef.current?.();
           }, 320);
-        }, duration);
+        }, effectiveDuration);
       } else {
         // Pre-loaded element: a brief frame delay (25ms) ensures the browser
         // establishes the initial transform/opacity state before transitioning
@@ -60,7 +70,7 @@ export const CopiedToast: React.FC<CopiedToastProps> = ({
           setTimeout(() => {
             onDismissRef.current?.();
           }, 320);
-        }, duration + 25);
+        }, effectiveDuration + 25);
       }
     } else {
       // Externally dismissed (e.g. Escape key pressed)
@@ -77,6 +87,8 @@ export const CopiedToast: React.FC<CopiedToastProps> = ({
       if (bumpTimerRef.current) clearTimeout(bumpTimerRef.current);
     };
   }, [toast, duration, isOpen]);
+
+  const isOfflineVariant = displayToast.variant === 'offline';
 
   // Preloaded in DOM: persists across renders so browser never drops transition frames
   return (
@@ -105,35 +117,53 @@ export const CopiedToast: React.FC<CopiedToastProps> = ({
           border: '1px solid var(--toast-border)',
         }}
       >
-        {/* Animated Checkmark Icon */}
-        <div
-          className="w-4 h-4 rounded-full flex items-center justify-center shrink-0"
-          style={{ color: 'var(--toast-icon)' }}
-        >
-          <svg
-            className="w-3.5 h-3.5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
-        </div>
-
-        <span className="truncate" style={{ color: 'var(--toast-subtext)' }}>
-          Copied{' '}
+        {isOfflineVariant ? (
           <span
-            className="font-semibold"
-            style={{ color: 'var(--toast-highlight)' }}
+            className="w-2 h-2 rounded-full bg-yellow-400 dark:bg-yellow-500 shrink-0"
+            aria-hidden="true"
+          />
+        ) : (
+          <div
+            className="w-4 h-4 rounded-full flex items-center justify-center shrink-0"
+            style={{ color: 'var(--toast-icon)' }}
           >
-            {displayReference || 'Verse'}
-          </span>{' '}
-          to clipboard
-        </span>
+            <svg
+              className="w-3.5 h-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          </div>
+        )}
+
+        {isOfflineVariant ? (
+          <span className="leading-snug" style={{ color: 'var(--toast-subtext)' }}>
+            <span
+              className="font-semibold"
+              style={{ color: 'var(--toast-highlight)' }}
+            >
+              {displayToast.title}
+            </span>{' '}
+            {displayToast.message}
+          </span>
+        ) : (
+          <span className="truncate" style={{ color: 'var(--toast-subtext)' }}>
+            Copied{' '}
+            <span
+              className="font-semibold"
+              style={{ color: 'var(--toast-highlight)' }}
+            >
+              {displayToast.reference || 'Verse'}
+            </span>{' '}
+            to clipboard
+          </span>
+        )}
       </div>
     </div>
   );

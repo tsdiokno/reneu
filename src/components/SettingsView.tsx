@@ -13,6 +13,13 @@ import {
 } from '../services/bibleStorage';
 import { usePWAInstall } from '../utils/usePWAInstall';
 import { usePWAUpdate } from '../utils/usePWAUpdate';
+import {
+  ensureFullNetBibleCached,
+  getOfflineBibleProgress,
+  refreshOfflineBibleProgress,
+  subscribeOfflineBibleProgress,
+  type OfflineBibleProgress,
+} from '../services/offlineBibleCache';
 import { Modal } from './Modal';
 import { ConfirmModal } from './ConfirmModal';
 import { AboutModal } from './AboutModal';
@@ -72,21 +79,47 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const unsubscribe = onAuthStateChange((u) => {
       if (mounted) setCurrentUser(u);
     });
+    const handleSyncStart = () => {
+      if (mounted) setIsSyncing(true);
+    };
+    const handleSyncDone = () => {
+      if (mounted) {
+        setIsSyncing(false);
+        setLastSyncDisplay(getLastSyncedTime());
+      }
+    };
+    const handleSyncEnd = () => {
+      if (mounted) setIsSyncing(false);
+    };
+    window.addEventListener('reneu:cloud-sync-start', handleSyncStart);
+    window.addEventListener('reneu:cloud-synced', handleSyncDone);
+    window.addEventListener('reneu:cloud-sync-end', handleSyncEnd);
     return () => {
       mounted = false;
       unsubscribe();
+      window.removeEventListener('reneu:cloud-sync-start', handleSyncStart);
+      window.removeEventListener('reneu:cloud-synced', handleSyncDone);
+      window.removeEventListener('reneu:cloud-sync-end', handleSyncEnd);
     };
   }, []);
 
   const handleSignOut = async () => {
     setAuthLoading(true);
     try {
-      await signOutUser();
+      const res = await signOutUser();
+      if (!res.success) {
+        setSyncFeedback(res.message);
+        setTimeout(() => setSyncFeedback(null), 5000);
+        return;
+      }
       setCurrentUser(null);
       setSyncFeedback('Signed out. Notes will continue saving locally on this device.');
       setTimeout(() => setSyncFeedback(null), 4000);
-    } catch (err: any) {
-      setSyncFeedback(err?.message || 'Sign out failed.');
+    } catch {
+      setSyncFeedback(
+        'Couldn’t finish signing out—your connection may be offline. Check your internet and try again, or report persistent issues in About Reneu.'
+      );
+      setTimeout(() => setSyncFeedback(null), 5000);
     } finally {
       setAuthLoading(false);
     }
@@ -101,10 +134,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         setSyncFeedback(`Synced successfully! ${res.notesPushed} pushed, ${res.notesPulled} pulled.`);
         setLastSyncDisplay(getLastSyncedTime());
       } else {
-        setSyncFeedback(`Sync failed: ${res.error || 'Check network connection'}`);
+        setSyncFeedback(
+          res.error ||
+            'Couldn’t sync right now—your connection may be offline. Notes stay saved locally; try again, or report persistent issues in About Reneu.'
+        );
       }
-    } catch (err: any) {
-      setSyncFeedback(`Sync error: ${err?.message || 'Unknown error'}`);
+    } catch {
+      setSyncFeedback(
+        'Couldn’t complete cloud sync—check your internet connection and try again, or report persistent issues in About Reneu.'
+      );
     } finally {
       setIsSyncing(false);
       setTimeout(() => setSyncFeedback(null), 5000);
@@ -118,6 +156,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     lastCheckedTime,
     appVersion,
     isStandalone,
+    isOnline,
     checkForUpdate,
     applyUpdate,
   } = usePWAUpdate();
@@ -132,6 +171,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   } = usePWAInstall();
 
   const isAppInstalled = isStandalone || isPWAInstalled;
+  const [offlineBibleProgress, setOfflineBibleProgress] = useState<OfflineBibleProgress>(() =>
+    getOfflineBibleProgress()
+  );
+
+  useEffect(() => {
+    const unsubscribe = subscribeOfflineBibleProgress(setOfflineBibleProgress);
+    void refreshOfflineBibleProgress();
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (activeDetailModal === 'install') {
+      void refreshOfflineBibleProgress();
+    }
+  }, [activeDetailModal]);
 
   const [instructionModal, setInstructionModal] = useState<{
     isOpen: boolean;
@@ -184,10 +238,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         success: result.success,
         message: result.message,
       });
-    } catch (err: any) {
+    } catch {
       setKeyTestFeedback({
         success: false,
-        message: err?.message || 'Verification test failed.',
+        message:
+          'Couldn’t verify your API key—check your internet connection and try again, or report persistent issues in About Reneu.',
       });
     } finally {
       setIsTestingKey(false);
@@ -438,7 +493,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         >
           {[
             { id: 'summaries' as const, label: 'Intelligent Summaries' },
-            { id: 'install' as const, label: 'Installed As App' },
+            { id: 'install' as const, label: 'App/Offline Mode' },
             { id: 'updates' as const, label: 'App Software Updates' },
             { id: 'sync' as const, label: 'Cloud Sync' },
           ].map((item) => (
@@ -448,7 +503,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               onClick={() => setActiveDetailModal(item.id)}
               className="w-full flex items-center justify-between py-4 text-left font-sans text-sm font-medium text-[var(--text-primary)] hover:text-[var(--text-subtle)] transition-colors cursor-pointer group"
             >
-              <span>{item.label}</span>
+              <span className="flex items-center gap-2">
+                <span>{item.label}</span>
+                {item.id === 'sync' && currentUser && !isOnline && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-yellow-500/15 text-yellow-700 dark:text-yellow-300">
+                    <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 shrink-0" />
+                    <span>Offline</span>
+                  </span>
+                )}
+                {item.id === 'sync' && currentUser && isOnline && (
+                  <span
+                    className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"
+                    title="Cloud sync connected"
+                  />
+                )}
+              </span>
               <svg
                 className="w-4 h-4 text-[var(--text-subtle)] group-hover:text-[var(--text-primary)] group-hover:translate-x-0.5 transition-all shrink-0"
                 viewBox="0 0 24 24"
@@ -558,7 +627,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           activeDetailModal === 'summaries'
             ? 'Intelligent Summaries'
             : activeDetailModal === 'install'
-            ? 'Installed As App'
+            ? 'App/Offline Mode'
             : activeDetailModal === 'updates'
             ? 'App Software Updates'
             : activeDetailModal === 'sync'
@@ -762,6 +831,87 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
               </div>
 
+              {isAppInstalled && (
+                <div className="p-3 rounded-lg bg-[var(--text-primary)]/5 border border-[var(--line-subtle)] flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="flex items-center gap-2 font-medium text-[var(--text-primary)]">
+                      <span
+                        className={`w-2 h-2 rounded-full shrink-0 ${
+                          offlineBibleProgress.status === 'complete'
+                            ? 'bg-emerald-500'
+                            : offlineBibleProgress.status === 'paused_offline'
+                            ? 'bg-yellow-500'
+                            : offlineBibleProgress.status === 'error'
+                            ? 'bg-rose-500'
+                            : 'bg-[var(--text-primary)] animate-pulse'
+                        }`}
+                      />
+                      <span>
+                        {offlineBibleProgress.status === 'complete'
+                          ? 'Full NET Bible Saved Locally'
+                          : offlineBibleProgress.status === 'downloading' ||
+                            offlineBibleProgress.status === 'checking'
+                          ? `Saving NET Bible${
+                              offlineBibleProgress.currentBookName
+                                ? ` (${offlineBibleProgress.currentBookName})`
+                                : ''
+                            }…`
+                          : offlineBibleProgress.status === 'paused_offline'
+                          ? 'Offline Bible Download Paused'
+                          : offlineBibleProgress.status === 'error'
+                          ? 'Offline Download Interrupted'
+                          : 'Preparing Offline NET Bible'}
+                      </span>
+                    </span>
+                    <span className="font-mono text-[11px] text-[var(--text-subtle)] shrink-0">
+                      {offlineBibleProgress.cachedChapters.toLocaleString()} /{' '}
+                      {offlineBibleProgress.totalChapters.toLocaleString()} ch
+                    </span>
+                  </div>
+
+                  {offlineBibleProgress.status === 'error' && offlineBibleProgress.error && (
+                    <p className="text-[11px] text-rose-600 dark:text-rose-400 leading-relaxed">
+                      {offlineBibleProgress.error}
+                    </p>
+                  )}
+
+                  {offlineBibleProgress.status !== 'complete' && (
+                    <div className="w-full h-1.5 rounded-full bg-[var(--text-primary)]/10 overflow-hidden">
+                      <div
+                        className="h-full bg-[var(--text-primary)] transition-all duration-300"
+                        style={{
+                          width: `${Math.min(
+                            100,
+                            Math.round(
+                              (offlineBibleProgress.cachedChapters /
+                                Math.max(1, offlineBibleProgress.totalChapters)) *
+                                100
+                            )
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {offlineBibleProgress.status !== 'complete' &&
+                    offlineBibleProgress.status !== 'downloading' &&
+                    offlineBibleProgress.status !== 'checking' &&
+                    isOnline && (
+                      <div className="flex justify-end pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => void ensureFullNetBibleCached()}
+                          className="text-[11px] font-semibold text-[var(--text-primary)] hover:underline cursor-pointer"
+                        >
+                          {offlineBibleProgress.status === 'error'
+                            ? 'Retry Download'
+                            : 'Download Remaining Chapters'}
+                        </button>
+                      </div>
+                    )}
+                </div>
+              )}
+
               <div className="flex items-center justify-end pt-2 border-t border-[var(--line-subtle)]">
                 {isAppInstalled ? (
                   <button
@@ -833,6 +983,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         ? 'Checking for software updates…'
                         : updateStatus === 'available' || hasUpdate
                         ? 'New Application Build Available'
+                        : updateStatus === 'offline'
+                        ? 'Offline — Update Check Skipped'
+                        : updateStatus === 'error'
+                        ? 'Couldn’t Check for Updates'
                         : 'Application Software is Current'}
                     </span>
                     {(updateStatus === 'available' || hasUpdate) && (
@@ -846,6 +1000,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       ? 'Looking for latest application release…'
                       : updateStatus === 'available' || hasUpdate
                       ? 'A newer version of the reader software is ready to activate.'
+                      : updateStatus === 'offline'
+                      ? 'No internet connection detected. Reconnect to check for newer releases.'
+                      : updateStatus === 'error'
+                      ? 'Couldn’t reach the update server—your connection may be blocked or unstable. Try again later, or report persistent issues in About Reneu.'
                       : lastCheckedTime
                       ? `Checked ${lastCheckedTime} • Offline Bible reader assets are cached.`
                       : 'Offline Bible reader and interface assets are cached on this device.'}
@@ -898,7 +1056,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <div
                   className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${
                     currentUser
-                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                      ? isOnline
+                        ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                        : 'bg-yellow-500/15 text-yellow-600 dark:text-yellow-400'
                       : 'bg-[var(--text-primary)]/8 text-[var(--text-primary)]'
                   }`}
                 >
@@ -927,8 +1087,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         : 'Personal Device Storage'}
                     </span>
                     {currentUser ? (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 whitespace-nowrap shrink-0">
-                        {currentUser.provider === 'google' ? 'Google Account' : 'Cloud Sync Active'}
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap shrink-0 ${
+                          isOnline
+                            ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                            : 'bg-yellow-500/20 text-yellow-700 dark:text-yellow-300'
+                        }`}
+                      >
+                        {!isOnline
+                          ? 'Offline • Not Syncing'
+                          : currentUser.provider === 'google'
+                          ? 'Google Account'
+                          : 'Cloud Sync Active'}
                       </span>
                     ) : (
                       <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-[var(--text-primary)]/10 text-[var(--text-primary)] whitespace-nowrap shrink-0">
@@ -938,7 +1108,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
                   <p className="font-sans text-xs text-[var(--text-subtle)] leading-relaxed">
                     {currentUser
-                      ? lastSyncDisplay
+                      ? !isOnline
+                        ? 'You are offline and not syncing to the cloud. Changes stay saved locally and sync will resume when back online.'
+                        : lastSyncDisplay
                         ? `Last synced at ${lastSyncDisplay}. Your verse reflections, bookmarks, and syntheses sync privately across devices.`
                         : 'Authenticated. Your personal study notes sync privately to your Reneu cloud account.'
                       : 'All notes and reading progress are preserved safely on this device. Sign in to sync your study data across devices.'}
@@ -977,9 +1149,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <button
                       type="button"
                       onClick={() => void handleManualSync()}
-                      disabled={isSyncing}
+                      disabled={isSyncing || !isOnline}
                       className="px-3.5 py-1.5 rounded-full bg-[var(--text-primary)] text-[var(--bg-app)] text-xs font-semibold hover:opacity-90 active:scale-95 transition-all cursor-pointer flex items-center gap-1.5 shadow-sm whitespace-nowrap shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                      title="Sync local study notes with cloud account"
+                      title={
+                        !isOnline
+                          ? 'Cloud sync unavailable while offline'
+                          : 'Sync local study notes with cloud account'
+                      }
                     >
                       <svg className={`w-3.5 h-3.5 shrink-0 ${isSyncing ? 'animate-spin' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />

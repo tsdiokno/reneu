@@ -6,6 +6,13 @@ export interface AboutModalProps {
   onClose: () => void;
 }
 
+const rawRepo = (import.meta.env.VITE_GITHUB_REPO as string | undefined)?.trim();
+const githubRepoUrl =
+  rawRepo && !rawRepo.includes('your-username')
+    ? `https://github.com/${rawRepo.replace(/^https?:\/\/github\.com\//, '').replace(/\/+$/, '')}`
+    : 'https://github.com/your-username/reneu';
+const githubIssuesUrl = `${githubRepoUrl}/issues/new`;
+
 export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
@@ -24,11 +31,12 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
           Reneu is a quiet, distraction-free canvas for reading Scripture and recording verse-by-verse reflections, crafted to help you focus on God&apos;s Word and be transformed by the renewing of your mind (Romans 12:2). Your reading progress, commentaries, and plans remain private and local-first on your device.
         </p>
 
-        {/* Paragraph 2: Assisted Intelligence & Open Source */}
+        {/* Paragraph 2: AI Disclosure & Open Source */}
         <p>
-          For transparency, this application was developed with the assistance of artificial intelligence tooling for design, architecture, and code generation. It is an open-source project, and developer contributions, feedback, and pull requests are warmly welcomed on{' '}
+          <strong className="font-medium text-[var(--text-primary)]">AI Disclosure:</strong>{' '}
+          Intelligent Summaries optionally uses Google Gemini with your own API key to summarize your notes; outputs are automated, can make mistakes, and should always be verified against Scripture. This open-source app was also built with AI coding assistance—contributions are welcome on{' '}
           <a
-            href="https://github.com/your-username/reneu"
+            href={githubRepoUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="underline underline-offset-2 hover:opacity-75 transition-opacity"
@@ -38,7 +46,22 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
           .
         </p>
 
-        {/* Paragraph 3: Scripture Attribution */}
+        {/* Paragraph 3: Contact Developer / Suggestions, Ideas & Bug Reports */}
+        <p>
+          <strong className="font-medium text-[var(--text-primary)]">Contact Developer:</strong>{' '}
+          Have a suggestion, idea, or bug report? Submit it on the{' '}
+          <a
+            href={githubIssuesUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2 hover:opacity-75 transition-opacity"
+          >
+            Reneu GitHub page
+          </a>
+          .
+        </p>
+
+        {/* Paragraph 4: Scripture Attribution */}
         <p>
           Scripture quotations are from the NET Bible® copyright ©1996, 2019 by Biblical Studies Press, L.L.C.{' '}
           (<a

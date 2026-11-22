@@ -125,7 +125,7 @@ function createRateLimiter(options: { maxRequests: number; windowMs: number; mes
 const synthesisLimiter = createRateLimiter({
   maxRequests: 6,
   windowMs: 60 * 1000,
-  message: 'Too many synthesis requests. Please wait a moment before trying again.',
+  message: 'You’ve generated several Intelligent Summaries in a row. Please wait a minute before trying again.',
 });
 
 const geminiKeyTestLimiter = createRateLimiter({
@@ -322,12 +322,29 @@ function parseGeminiApiError(err: any): { statusCode: number; message: string } 
     // Keep rawMessage when not JSON
   }
 
-  if (apiCode === 400 || apiCode === 401 || apiCode === 403 || apiCode === 404 || apiCode === 429) {
-    return { statusCode: apiCode, message: parsedMessage || 'Could not verify key with Gemini API.' };
+  const lower = parsedMessage.toLowerCase();
+  if (apiCode === 400 || lower.includes('api_key_invalid') || lower.includes('api key not valid')) {
+    return {
+      statusCode: 400,
+      message: 'This Gemini API key isn’t valid. Copy a valid key from Google AI Studio and try again.',
+    };
+  }
+  if (apiCode === 401 || apiCode === 403 || lower.includes('permission')) {
+    return {
+      statusCode: apiCode || 403,
+      message: 'Access denied for this API key. Make sure the Gemini API is enabled for it in Google AI Studio.',
+    };
+  }
+  if (apiCode === 429 || lower.includes('quota') || lower.includes('resource_exhausted') || lower.includes('rate')) {
+    return {
+      statusCode: 429,
+      message: 'Gemini API rate limit or quota reached. Wait a moment or check your Google AI Studio quota.',
+    };
   }
   return {
-    statusCode: 400,
-    message: parsedMessage || 'Could not verify key with Gemini API.',
+    statusCode: apiCode === 404 ? 404 : 400,
+    message:
+      'Couldn’t verify this key with Gemini right now—check your key and connection, or report persistent issues in About Reneu.',
   };
 }
 
@@ -346,7 +363,7 @@ app.post('/api/test-gemini-key', geminiKeyTestLimiter, async (req: Request, res:
   if (!ai) {
     return res.status(400).json({
       success: false,
-      message: 'Invalid Gemini API key format.',
+      message: 'That doesn’t look like a valid Gemini API key. Paste the full key from Google AI Studio and try again.',
     });
   }
 
@@ -396,7 +413,8 @@ app.post('/api/test-gemini-key', geminiKeyTestLimiter, async (req: Request, res:
     console.error('Unexpected error in /api/test-gemini-key:', err);
     return res.status(500).json({
       success: false,
-      message: err?.message || 'Verification request failed.',
+      message:
+        'Couldn’t reach the Gemini verification service—try again shortly, or report persistent issues in About Reneu.',
     });
   }
 });
@@ -444,7 +462,8 @@ async function handleDiscardSynthesis(req: Request, res: Response) {
       skillId: 'memory://user/living-profile',
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to update dynamic profile on discard' });
+    console.warn('Discard profile update error:', err);
+    res.status(500).json({ error: 'Couldn’t update your summary preferences just now. You can keep using Reneu normally.' });
   }
 }
 
@@ -510,11 +529,11 @@ app.post('/api/synthesize-notes', synthesisLimiter, async (req: Request, res: Re
     };
 
     if (!Array.isArray(notes) || notes.length === 0) {
-      return res.status(400).json({ error: 'At least one note is required for synthesis.' });
+      return res.status(400).json({ error: 'Add at least one note before generating an Intelligent Summary.' });
     }
 
     if (notes.length > 200) {
-      return res.status(400).json({ error: 'Payload exceeds maximum limit of 200 notes.' });
+      return res.status(400).json({ error: 'Too many notes selected (maximum 200). Filter to a smaller set and try again.' });
     }
 
     // Sanitize and bound notes payload to prevent memory exhaustion and token overflows
@@ -533,7 +552,7 @@ app.post('/api/synthesize-notes', synthesisLimiter, async (req: Request, res: Re
     // Filter valid notes with content
     const validNotes = boundedNotes.filter((n) => n.content && n.content.trim().length > 0);
     if (validNotes.length === 0) {
-      return res.status(400).json({ error: 'Notes contain no readable text.' });
+      return res.status(400).json({ error: 'Your selected notes have no readable text yet. Add a reflection and try again.' });
     }
 
     // Select subset based on mode (bounded between 1 and 20 notes)
@@ -758,7 +777,8 @@ Synthesize the underlying trajectory into a concise, simple, and personal 2-3 se
     console.error('Error generating commentary synthesis:', error);
     if (!isDevModeActive(req)) {
       return res.status(400).json({
-        error: error?.message || 'Synthesis failed. Please verify your Gemini API key in Settings.',
+        error:
+          'Couldn’t generate summary. Your Gemini API key may be invalid or over quota—check Settings, or report persistent issues in About Reneu.',
         code: 'SYNTHESIS_FAILED',
       });
     }
@@ -767,7 +787,7 @@ Synthesize the underlying trajectory into a concise, simple, and personal 2-3 se
     return res.json({
       ...fallback,
       isFallback: true,
-      error: error?.message || 'Synthesis encountered an issue. Displaying heuristic synthesis.',
+      error: 'Summary service was unreachable; displaying an offline summary instead.',
     });
   }
 });
@@ -809,8 +829,8 @@ app.use('/api', (err: any, _req: Request, res: Response, _next: any) => {
   const status = typeof err?.status === 'number' && err.status >= 400 ? err.status : 500;
   res.status(status).json({
     success: false,
-    error: err?.message || 'Internal server error.',
-    message: err?.message || 'Internal server error.',
+    error: 'Something went wrong on the server. Please try again shortly, or report persistent issues in About Reneu.',
+    message: 'Something went wrong on the server. Please try again shortly, or report persistent issues in About Reneu.',
   });
 });
 

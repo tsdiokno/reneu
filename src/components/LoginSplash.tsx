@@ -204,8 +204,11 @@ export const LoginSplash: React.FC<LoginSplashProps> = ({
           resetCaptcha();
         }
       }
-    } catch (err: any) {
-      setFeedback({ text: err?.message || 'Authentication failed. Please try again.', isError: true });
+    } catch {
+      setFeedback({
+        text: 'Couldn’t complete sign-in—check your email, password, and internet connection, or report persistent issues in About Reneu.',
+        isError: true,
+      });
       resetCaptcha();
     } finally {
       setLoading(false);
@@ -220,8 +223,11 @@ export const LoginSplash: React.FC<LoginSplashProps> = ({
       if (!res.success) {
         setFeedback({ text: res.message, isError: true });
       }
-    } catch (err: any) {
-      setFeedback({ text: err?.message || 'Failed to start Google sign-in.', isError: true });
+    } catch {
+      setFeedback({
+        text: 'Couldn’t start Google sign-in—check your connection or browser redirect settings, or report persistent issues in About Reneu.',
+        isError: true,
+      });
     } finally {
       setGoogleLoading(false);
     }

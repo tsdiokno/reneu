@@ -664,6 +664,25 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
         }
       });
 
+    const handleCloudSynced = async () => {
+      try {
+        const [freshNotes, freshProfile] = await Promise.all([
+          getAllNotes({ includeDeleted: true }),
+          getUserProfile(),
+        ]);
+        if (!mounted) return;
+        const valid = freshNotes.filter(
+          (n) => (isNoteDeleted(n) && !isDeletedNoteExpired(n)) || (!isNoteDeleted(n) && !isSynthesisExpired(n))
+        );
+        setAllNotes(valid);
+        if (freshProfile) {
+          setUserProfile(freshProfile);
+        }
+      } catch (err) {
+        console.warn('Could not refresh notes after cloud sync:', err);
+      }
+    };
+
     let prevW = typeof window !== 'undefined' ? window.innerWidth : 0;
     const handleResize = () => {
       const w = window.innerWidth;
@@ -673,10 +692,12 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
       }
     };
     window.addEventListener('resize', handleResize, { passive: true });
+    window.addEventListener('reneu:cloud-synced', handleCloudSynced);
 
     return () => {
       mounted = false;
       window.removeEventListener('resize', handleResize);
+      window.removeEventListener('reneu:cloud-synced', handleCloudSynced);
     };
   }, [evaluateDiceForSynthesis, notifyDiscardToSkillsEngine]);
 

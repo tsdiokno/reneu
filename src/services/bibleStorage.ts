@@ -411,12 +411,16 @@ export async function testGeminiApiKey(customKey?: string): Promise<{
 
     return {
       success: false,
-      message: data.message || data.error || `Validation failed (HTTP ${res.status})`,
+      message:
+        data.message ||
+        data.error ||
+        'Couldn’t verify this key right now. Double-check your key and connection, or report persistent issues in About Reneu.',
     };
-  } catch (err: any) {
+  } catch {
     return {
       success: false,
-      message: err?.message || 'Network error verifying API key.',
+      message:
+        'Couldn’t reach the verification server. Check your internet connection and try again, or report persistent issues in About Reneu.',
     };
   }
 }
