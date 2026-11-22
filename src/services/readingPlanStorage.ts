@@ -6,19 +6,110 @@ import type {
   PlanTrackStyle,
 } from '../types/readingPlan';
 import { CLASSICAL_PRESETS } from './readingPlanEngine';
+import { isDummyDataEnabled } from '../utils/devSimulation';
+import {
+  pushReadingPlanToCloud,
+  deleteReadingPlanFromCloud,
+  pushSettingToCloud,
+  recordLocalPlanTombstone,
+} from './supabaseSync';
 
 const SETTING_KEY_ACTIVE_PLAN = 'active_reading_plan_id';
+const SETTING_KEY_PLANS_INITIAL_SEEDED = 'plans_initial_seeded';
+
+let plansInitPromise: Promise<void> | null = null;
 
 function clonePlain<T>(obj: T): T {
   return JSON.parse(JSON.stringify(obj));
 }
 
+function isUntouchedLegacyMcheyneSeed(plan: ReadingPlan): boolean {
+  return (
+    plan.id.startsWith('plan-mcheyne-') &&
+    plan.presetKey === 'mcheyne' &&
+    (!plan.completedDays || plan.completedDays.length === 0) &&
+    (!plan.completedPortions || Object.keys(plan.completedPortions).length === 0)
+  );
+}
+
 /**
- * Retrieves all saved reading plans
+ * Initializes reading plans state cleanly:
+ * - In production (!isDummyDataEnabled()): guarantees Plans start empty, purges any `seed-*`
+ *   demo plans, and performs a one-time cleanup of untouched auto-seeded legacy beta M'Cheyne plans.
+ * - In dev/demo mode (isDummyDataEnabled()): seeds the demo M'Cheyne plan once with a `seed-`
+ *   prefix so it stays local and is never pushed to Supabase.
+ */
+export async function ensurePlansInitialized(): Promise<void> {
+  if (!plansInitPromise) {
+    plansInitPromise = (async () => {
+      try {
+        const dummyEnabled = isDummyDataEnabled();
+
+        if (!dummyEnabled) {
+          // Always strip any stray `seed-*` plans when running in production
+          const currentPlans = await db.readingPlans.toArray();
+          const seedPlanIds = currentPlans
+            .filter((p) => p.id.startsWith('seed-'))
+            .map((p) => p.id);
+
+          if (seedPlanIds.length > 0) {
+            await db.readingPlans.bulkDelete(seedPlanIds);
+            const activeSetting = await db.settings.get(SETTING_KEY_ACTIVE_PLAN);
+            if (typeof activeSetting?.value === 'string' && seedPlanIds.includes(activeSetting.value)) {
+              await db.settings.delete(SETTING_KEY_ACTIVE_PLAN);
+            }
+          }
+
+          // One-time migration for existing beta users who had auto-seeded untouched M'Cheyne plans
+          const seededSetting = await db.settings.get(SETTING_KEY_PLANS_INITIAL_SEEDED);
+          if (!seededSetting) {
+            const remainingPlans = await db.readingPlans.toArray();
+            if (
+              remainingPlans.length > 0 &&
+              remainingPlans.every((p) => isUntouchedLegacyMcheyneSeed(p))
+            ) {
+              const legacyIds = remainingPlans.map((p) => p.id);
+              await db.readingPlans.bulkDelete(legacyIds);
+              await db.settings.delete(SETTING_KEY_ACTIVE_PLAN);
+              const now = Date.now();
+              for (const legacyId of legacyIds) {
+                await recordLocalPlanTombstone(legacyId, now);
+                void deleteReadingPlanFromCloud(legacyId, now);
+              }
+            }
+            await db.settings.put({ id: SETTING_KEY_PLANS_INITIAL_SEEDED, value: true });
+          }
+          return;
+        }
+
+        // Dev / Demo mode: seed M'Cheyne once if database has no plans yet
+        const seededSetting = await db.settings.get(SETTING_KEY_PLANS_INITIAL_SEEDED);
+        if (!seededSetting) {
+          const count = await db.readingPlans.count();
+          if (count === 0) {
+            await createPlanFromPreset('mcheyne', true, { isSeedDemo: true });
+          }
+          await db.settings.put({ id: SETTING_KEY_PLANS_INITIAL_SEEDED, value: true });
+        }
+      } catch (err) {
+        console.warn('Error during reading plans initialization:', err);
+      }
+    })();
+  }
+  return plansInitPromise;
+}
+
+/**
+ * Retrieves all saved reading plans (most recently created first)
  */
 export async function getAllReadingPlans(): Promise<ReadingPlan[]> {
   try {
-    return await db.readingPlans.orderBy('createdAt').reverse().toArray();
+    await ensurePlansInitialized();
+    const plans = await db.readingPlans.orderBy('createdAt').reverse().toArray();
+    if (!isDummyDataEnabled()) {
+      return plans.filter((p) => !p.id.startsWith('seed-'));
+    }
+    return plans;
   } catch (err) {
     console.warn('Error fetching reading plans:', err);
     return [];
@@ -26,29 +117,31 @@ export async function getAllReadingPlans(): Promise<ReadingPlan[]> {
 }
 
 /**
- * Retrieves the currently active reading plan, initializing the default M'Cheyne preset if none exists
+ * Retrieves the currently active reading plan, or null if no plans exist
  */
 export async function getActiveReadingPlan(): Promise<ReadingPlan | null> {
   try {
-    const plans = await db.readingPlans.toArray();
+    await ensurePlansInitialized();
+    const all = await db.readingPlans.toArray();
+    const plans = !isDummyDataEnabled() ? all.filter((p) => !p.id.startsWith('seed-')) : all;
+
     if (plans.length === 0) {
-      // Auto-initialize default classical M'Cheyne plan
-      const defaultPlan = await createPlanFromPreset('mcheyne', true);
-      return defaultPlan;
+      return null;
     }
 
     const activeSetting = await db.settings.get(SETTING_KEY_ACTIVE_PLAN);
-    if (activeSetting && activeSetting.value) {
+    if (activeSetting && typeof activeSetting.value === 'string' && activeSetting.value) {
       const match = plans.find((p) => p.id === activeSetting.value);
       if (match) return match;
     }
 
-    // Fall back to first active plan or most recent plan
-    const active = plans.find((p) => p.isActive) || plans[0];
+    // Fall back to first active plan or most recently created plan
+    const sorted = [...plans].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const active = sorted.find((p) => p.isActive) || sorted[0] || null;
     if (active) {
       await db.settings.put({ id: SETTING_KEY_ACTIVE_PLAN, value: active.id });
     }
-    return active || null;
+    return active;
   } catch (err) {
     console.warn('Error fetching active reading plan:', err);
     return null;
@@ -56,42 +149,103 @@ export async function getActiveReadingPlan(): Promise<ReadingPlan | null> {
 }
 
 /**
- * Saves or updates a reading plan in Dexie
+ * Saves or updates a reading plan in Dexie and syncs to Supabase when signed in
  */
 export async function saveReadingPlan(plan: ReadingPlan): Promise<void> {
   const plain = clonePlain(plan);
-  await db.readingPlans.put(plain);
-  if (plain.isActive) {
-    await db.settings.put({ id: SETTING_KEY_ACTIVE_PLAN, value: plain.id });
+  if (!plain.updatedAt) {
+    plain.updatedAt = Date.now();
   }
+  await db.readingPlans.put(plain);
+  if (plain.isActive && !plain.id.startsWith('seed-')) {
+    await db.settings.put({
+      id: SETTING_KEY_ACTIVE_PLAN,
+      value: plain.id,
+      updatedAt: plain.updatedAt,
+    } as any);
+    void pushSettingToCloud(SETTING_KEY_ACTIVE_PLAN, plain.id);
+  }
+  void pushReadingPlanToCloud(plain);
 }
 
 /**
- * Sets a specific plan as the active one
+ * Sets a specific plan as the active one locally and in the cloud
  */
 export async function setActiveReadingPlan(planId: string): Promise<void> {
+  const now = Date.now();
   const plans = await db.readingPlans.toArray();
+  let matchedNonSeed = false;
+
   for (const p of plans) {
     const isActive = p.id === planId;
+    if (isActive && !p.id.startsWith('seed-')) {
+      matchedNonSeed = true;
+    }
     if (p.isActive !== isActive) {
-      p.isActive = isActive;
-      await db.readingPlans.put(clonePlain(p));
+      const updated: ReadingPlan = clonePlain({ ...p, isActive, updatedAt: now });
+      await db.readingPlans.put(updated);
+      void pushReadingPlanToCloud(updated);
     }
   }
-  await db.settings.put({ id: SETTING_KEY_ACTIVE_PLAN, value: planId });
+
+  if (matchedNonSeed || !planId.startsWith('seed-')) {
+    await db.settings.put({
+      id: SETTING_KEY_ACTIVE_PLAN,
+      value: planId,
+      updatedAt: now,
+    } as any);
+    void pushSettingToCloud(SETTING_KEY_ACTIVE_PLAN, planId);
+  } else {
+    await db.settings.put({ id: SETTING_KEY_ACTIVE_PLAN, value: planId });
+  }
 }
 
 /**
- * Deletes a reading plan
+ * Deletes a reading plan locally and in Supabase (never re-creating a demo plan)
  */
 export async function deleteReadingPlan(planId: string): Promise<void> {
+  const now = Date.now();
   await db.readingPlans.delete(planId);
-  const remaining = await db.readingPlans.toArray();
+
+  if (!planId.startsWith('seed-')) {
+    await recordLocalPlanTombstone(planId, now);
+    void deleteReadingPlanFromCloud(planId, now);
+  }
+
+  const allRemaining = await db.readingPlans.orderBy('createdAt').reverse().toArray();
+  const remaining = !isDummyDataEnabled()
+    ? allRemaining.filter((p) => !p.id.startsWith('seed-'))
+    : allRemaining;
+
   if (remaining.length > 0) {
-    await setActiveReadingPlan(remaining[0].id);
+    const activeSetting = await db.settings.get(SETTING_KEY_ACTIVE_PLAN);
+    const currentActiveId = typeof activeSetting?.value === 'string' ? activeSetting.value : null;
+    const stillHasActive = remaining.some((p) => p.id === currentActiveId || (currentActiveId !== planId && p.isActive));
+    if (!stillHasActive || currentActiveId === planId) {
+      await setActiveReadingPlan(remaining[0].id);
+    }
   } else {
-    // If all plans were deleted, re-create the default preset
-    await createPlanFromPreset('mcheyne', true);
+    await db.settings.put({
+      id: SETTING_KEY_ACTIVE_PLAN,
+      value: null,
+      updatedAt: now,
+    } as any);
+    void pushSettingToCloud(SETTING_KEY_ACTIVE_PLAN, null);
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('reneu:plan-deleted', { detail: { planId } }));
+  }
+}
+
+async function deactivateOtherPlans(excludeId: string, now: number): Promise<void> {
+  const existing = await db.readingPlans.toArray();
+  for (const p of existing) {
+    if (p.id !== excludeId && p.isActive) {
+      const deactivated: ReadingPlan = clonePlain({ ...p, isActive: false, updatedAt: now });
+      await db.readingPlans.put(deactivated);
+      void pushReadingPlanToCloud(deactivated);
+    }
   }
 }
 
@@ -100,11 +254,13 @@ export async function deleteReadingPlan(planId: string): Promise<void> {
  */
 export async function createPlanFromPreset(
   presetKey: NonNullable<ReadingPlan['presetKey']>,
-  setAsActive: boolean = true
+  setAsActive: boolean = true,
+  options?: { isSeedDemo?: boolean }
 ): Promise<ReadingPlan> {
   const def = CLASSICAL_PRESETS.find((p) => p.key === presetKey) || CLASSICAL_PRESETS[0];
   const now = Date.now();
-  const id = `plan-${presetKey}-${now}-${Math.random().toString(36).substring(2, 7)}`;
+  const prefix = options?.isSeedDemo ? `seed-plan-${presetKey}` : `plan-${presetKey}`;
+  const id = `${prefix}-${now}-${Math.random().toString(36).substring(2, 7)}`;
 
   const newPlan: ReadingPlan = {
     id,
@@ -124,10 +280,10 @@ export async function createPlanFromPreset(
     completedPortions: {},
   };
 
-  await saveReadingPlan(newPlan);
   if (setAsActive) {
-    await setActiveReadingPlan(id);
+    await deactivateOtherPlans(id, now);
   }
+  await saveReadingPlan(newPlan);
   return newPlan;
 }
 
@@ -146,6 +302,7 @@ export async function createCustomPlan(params: {
 }): Promise<ReadingPlan> {
   const now = Date.now();
   const id = `plan-custom-${now}-${Math.random().toString(36).substring(2, 7)}`;
+  const shouldActivate = params.setAsActive ?? true;
 
   const newPlan: ReadingPlan = {
     id,
@@ -160,15 +317,15 @@ export async function createCustomPlan(params: {
     startDate: now,
     createdAt: now,
     updatedAt: now,
-    isActive: params.setAsActive ?? true,
+    isActive: shouldActivate,
     completedDays: [],
     completedPortions: {},
   };
 
-  await saveReadingPlan(newPlan);
-  if (params.setAsActive ?? true) {
-    await setActiveReadingPlan(id);
+  if (shouldActivate) {
+    await deactivateOtherPlans(id, now);
   }
+  await saveReadingPlan(newPlan);
   return newPlan;
 }
 

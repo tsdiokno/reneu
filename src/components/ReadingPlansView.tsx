@@ -38,7 +38,7 @@ import {
 } from '../services/bibleStorage';
 
 interface ReadingPlansViewProps {
-  onNavigate: (bookId: number, chapter: number, verse: number) => void;
+  onNavigate: (bookId: number, chapter: number, verse?: number) => void;
   onStartPlanReading?: (
     plan: ReadingPlan,
     daySchedule: PlanDaySchedule,
@@ -177,6 +177,15 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
     void loadPlans();
   }, [loadPlans]);
 
+  // Reload plans automatically when cloud sync finishes in the background
+  useEffect(() => {
+    const handlePlansSynced = () => {
+      void loadPlans();
+    };
+    window.addEventListener('reneu:plans-synced', handlePlansSynced);
+    return () => window.removeEventListener('reneu:plans-synced', handlePlansSynced);
+  }, [loadPlans]);
+
   // Synchronize focused day if initialDayNumber prop changes from Reader mode
   useEffect(() => {
     if (typeof initialDayNumber === 'number' && initialDayNumber >= 1) {
@@ -308,7 +317,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
     } else {
       const portion = currentSchedule.readings[targetPortionIndex] || currentSchedule.readings[0];
       if (portion) {
-        onNavigate(portion.bookId, portion.startChapter, 1);
+        onNavigate(portion.bookId, portion.startChapter);
       }
     }
   };
@@ -841,18 +850,21 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
         </div>
       ) : (
         /* Empty State */
-        <div className="py-24 flex flex-col items-center text-center gap-4">
-          <p className={`text-base ${accentFontClass} text-[var(--text-subtle)]`}>
-            No active Bible reading plan selected.
+        <div className="py-24 flex flex-col items-center text-center gap-3">
+          <p className={`text-lg ${accentFontClass} text-[var(--text-primary)]`}>
+            No reading plans yet
+          </p>
+          <p className="text-xs text-[var(--text-subtle)] max-w-xs leading-relaxed font-sans">
+            Start a curated schedule or build a custom plan. Plans are saved locally on your device and synced to the cloud when signed in.
           </p>
           <button
             type="button"
             onClick={() => {
               setIsNewPlanModalOpen(true);
             }}
-            className="px-5 py-2 rounded-full bg-[var(--text-primary)] text-[var(--bg-app)] text-xs font-semibold cursor-pointer"
+            className="mt-2 px-5 py-2 rounded-full bg-[var(--text-primary)] text-[var(--bg-app)] text-xs font-semibold hover:opacity-90 transition-opacity cursor-pointer"
           >
-            Choose a Reading Plan
+            + Create Reading Plan
           </button>
         </div>
       )}
@@ -867,58 +879,64 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
       >
         <div className="p-6 flex flex-col gap-4 font-sans text-xs sm:text-sm">
           <p className="text-xs text-[var(--text-subtle)]">
-            Select an active plan or create a new schedule. All plans and progress are stored safely on your device.
+            Select an active plan or create a new schedule. All plans and progress are saved on your device and synced to the cloud when signed in.
           </p>
 
           <div className="flex flex-col gap-2 max-h-72 overflow-y-auto divide-y divide-[var(--line-subtle)]">
-            {allPlans.map((plan) => {
-              const isActive = plan.id === activePlan?.id;
-              const completedCount = plan.completedDays?.length || 0;
-              const pct = Math.round((completedCount / plan.durationDays) * 100);
+            {allPlans.length === 0 ? (
+              <p className="py-6 text-center text-xs text-[var(--text-subtle)]">
+                No saved reading plans yet.
+              </p>
+            ) : (
+              allPlans.map((plan) => {
+                const isActive = plan.id === activePlan?.id;
+                const completedCount = plan.completedDays?.length || 0;
+                const pct = Math.round((completedCount / plan.durationDays) * 100);
 
-              return (
-                <div
-                  key={plan.id}
-                  className={`pt-3 pb-2 flex items-center justify-between gap-3 ${
-                    isActive ? 'font-semibold' : ''
-                  }`}
-                >
-                  <button
-                    type="button"
-                    onClick={() => void handleSelectPlan(plan.id)}
-                    className="flex-1 text-left min-w-0 cursor-pointer"
+                return (
+                  <div
+                    key={plan.id}
+                    className={`pt-3 pb-2 flex items-center justify-between gap-3 ${
+                      isActive ? 'font-semibold' : ''
+                    }`}
                   >
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[var(--text-primary)] truncate ${accentFontClass} text-base`}>
-                        {plan.title}
-                      </span>
-                      {isActive && (
-                        <span className="text-[10px] uppercase font-sans font-semibold tracking-wider text-emerald-700 dark:text-emerald-300">
-                          Active
+                    <button
+                      type="button"
+                      onClick={() => void handleSelectPlan(plan.id)}
+                      className="flex-1 text-left min-w-0 cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[var(--text-primary)] truncate ${accentFontClass} text-base`}>
+                          {plan.title}
                         </span>
-                      )}
-                    </div>
-                    <span className="text-xs text-[var(--text-subtle)] truncate block font-sans font-normal mt-0.5">
-                      {plan.durationDays} days · {plan.daysPerWeek}d/wk · {completedCount}/{plan.durationDays} complete ({pct}%)
-                    </span>
-                  </button>
+                        {isActive && (
+                          <span className="text-[10px] uppercase font-sans font-semibold tracking-wider text-emerald-700 dark:text-emerald-300">
+                            Active
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-xs text-[var(--text-subtle)] truncate block font-sans font-normal mt-0.5">
+                        {plan.durationDays} days · {plan.daysPerWeek}d/wk · {completedCount}/{plan.durationDays} complete ({pct}%)
+                      </span>
+                    </button>
 
-                  <button
-                    type="button"
-                    onClick={() => handleDeletePlan(plan)}
-                    className="p-1.5 text-[var(--text-subtle)] hover:text-rose-500 transition-colors cursor-pointer"
-                    title="Delete Plan"
-                    aria-label="Delete Plan"
-                  >
-                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M3 6h18" />
-                      <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
-                      <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
-                    </svg>
-                  </button>
-                </div>
-              );
-            })}
+                    <button
+                      type="button"
+                      onClick={() => handleDeletePlan(plan)}
+                      className="p-1.5 text-[var(--text-subtle)] hover:text-rose-500 transition-colors cursor-pointer"
+                      title="Delete Plan"
+                      aria-label="Delete Plan"
+                    >
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 6h18" />
+                        <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                        <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                      </svg>
+                    </button>
+                  </div>
+                );
+              })
+            )}
           </div>
 
           <div className="pt-4 border-t border-[var(--line-subtle)] flex items-center justify-between gap-3">

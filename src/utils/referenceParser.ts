@@ -477,6 +477,70 @@ export function getOmnibarSuggestions(
     return results.slice(0, limit);
   }
 
+  const normBookPart = rawBookPart.toLowerCase().replace(/[\s.]+/g, '');
+  const exactCanonicalBook = BOOK_SEARCH_INDEX.find((entry) => entry.normName === normBookPart);
+
+  // Switch suggestions popup directly to chapter listings once a canonical book name is completed
+  if (exactCanonicalBook) {
+    if (parsedChapter === null) {
+      const chapterList: OmnibarSuggestion[] = [];
+      for (let ch = 1; ch <= exactCanonicalBook.chapterCount; ch++) {
+        chapterList.push({
+          id: `book-${exactCanonicalBook.id}-ch-${ch}`,
+          label: `${exactCanonicalBook.name} ${ch}`,
+          sublabel: `Chapter ${ch} of ${exactCanonicalBook.chapterCount} · ${exactCanonicalBook.testamentLabel}`,
+          target: { bookId: exactCanonicalBook.id, chapter: ch },
+          score: 1000 - ch * 0.001,
+        });
+      }
+      return chapterList;
+    }
+
+    if (parsedVerse !== null || parsedChapter > exactCanonicalBook.chapterCount || parsedChapter < 1) {
+      const safeCh = Math.max(1, Math.min(parsedChapter, exactCanonicalBook.chapterCount));
+      const safeVs = parsedVerse !== null ? Math.max(1, parsedVerse) : undefined;
+      const clamped = parsedChapter > exactCanonicalBook.chapterCount || parsedChapter < 1;
+      return [
+        {
+          id: `ref-${exactCanonicalBook.id}-${safeCh}-${safeVs ?? 0}`,
+          label: safeVs ? `${exactCanonicalBook.name} ${safeCh}:${safeVs}` : `${exactCanonicalBook.name} ${safeCh}`,
+          sublabel: clamped
+            ? `Clamped to max chapter (${exactCanonicalBook.chapterCount})`
+            : `Chapter ${safeCh} of ${exactCanonicalBook.chapterCount} · ${exactCanonicalBook.testamentLabel}`,
+          target: {
+            bookId: exactCanonicalBook.id,
+            chapter: safeCh,
+            ...(safeVs ? { verse: safeVs } : {}),
+          },
+          score: 1000,
+        },
+      ];
+    }
+
+    const chStr = String(parsedChapter);
+    const matchingChapters: OmnibarSuggestion[] = [
+      {
+        id: `ref-${exactCanonicalBook.id}-${parsedChapter}-0`,
+        label: `${exactCanonicalBook.name} ${parsedChapter}`,
+        sublabel: `Chapter ${parsedChapter} of ${exactCanonicalBook.chapterCount} · ${exactCanonicalBook.testamentLabel}`,
+        target: { bookId: exactCanonicalBook.id, chapter: parsedChapter },
+        score: 1000,
+      },
+    ];
+    for (let ch = 1; ch <= exactCanonicalBook.chapterCount; ch++) {
+      if (ch !== parsedChapter && String(ch).startsWith(chStr)) {
+        matchingChapters.push({
+          id: `ref-${exactCanonicalBook.id}-${ch}-0`,
+          label: `${exactCanonicalBook.name} ${ch}`,
+          sublabel: `Chapter ${ch} of ${exactCanonicalBook.chapterCount} · ${exactCanonicalBook.testamentLabel}`,
+          target: { bookId: exactCanonicalBook.id, chapter: ch },
+          score: 990 - ch * 0.001,
+        });
+      }
+    }
+    return matchingChapters;
+  }
+
   const scored = BOOK_SEARCH_INDEX
     .map((entry) => ({
       entry,

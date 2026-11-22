@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useDeferredValue } from 'react';
 import {
   getAllNotes,
   addOrUpdateNote,
@@ -41,9 +41,10 @@ import {
 } from './NotesFilterToolbar';
 import { NotesViewSkeleton } from './NotesViewSkeleton';
 import { fuzzyMatchNote, renderHighlightedText } from '../utils/fuzzySearch';
+import { useAutoHideHeader } from '../utils/useAutoHideHeader';
 
 interface AllNotesViewProps {
-  onNavigate: (bookId: number, chapter: number, verse: number) => void;
+  onNavigate: (bookId: number, chapter: number, verse?: number) => void;
   isComposingPlainNote?: boolean;
   onToggleComposePlainNote?: (val: boolean | ((prev: boolean) => boolean)) => void;
 }
@@ -240,6 +241,23 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
   const [isMobile, setIsMobile] = useState<boolean>(() =>
     typeof window !== 'undefined' ? window.innerWidth < 768 : false
   );
+  const notesHeaderRef = useRef<HTMLElement>(null);
+  const hasInitializedScrollRef = useRef<boolean>(false);
+
+  useLayoutEffect(() => {
+    if (isLoading || hasInitializedScrollRef.current) return;
+    hasInitializedScrollRef.current = true;
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+  }, [isLoading]);
+
+  const {
+    isVisible: isNotesHeaderVisible,
+    isScrolledPastTop: isNotesScrolledPastTop,
+  } = useAutoHideHeader({
+    headerRef: notesHeaderRef,
+    enabled: !isLoading,
+    resetKey: isLoading ? 'loading' : 'ready',
+  });
   const [userProfile, setUserProfile] = useState<string>('');
 
   // Advanced Filtering and Sorting State
@@ -672,34 +690,10 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
       .sort((a, b) => (b.deletedAt || b.updatedAt) - (a.deletedAt || a.updatedAt));
   }, [allNotes]);
 
-  // Active synthesis: the latest valid, unexpired active synthesis
-  // Keeps visible permanently if starred or commented; otherwise expires after 48h or is replaced by new synthesis
-  const activeSynthesis = useMemo(() => {
-    const validSyntheses = activeAllNotes
-      .filter((n) => n.isSynthesis)
-      .sort((a, b) => (b.createdAt || b.updatedAt) - (a.createdAt || a.updatedAt));
-    return validSyntheses[0] || null;
-  }, [activeAllNotes]);
-
-  // Notes stream: includes all standard active notes PLUS any retained active syntheses (excluding the currently active hero synthesis)
+  // Unified notes stream: all non-deleted Scripture notes, plain notes, and valid unexpired AI syntheses
   const streamNotes = useMemo(() => {
-    return activeAllNotes.filter((n) => {
-      if (!n.isSynthesis) return true;
-      // Retained syntheses only (bookmarked or commented)
-      if (!isSynthesisRetained(n)) return false;
-      // Do not duplicate the currently active hero synthesis in the stream immediately below
-      if (activeSynthesis && n.id === activeSynthesis.id) return false;
-      return true;
-    });
-  }, [activeAllNotes, activeSynthesis]);
-
-  // Active synthesis search match (Fuzzy, typo-tolerant, non-blocking)
-  const activeSynthesisMatchesSearch = useMemo(() => {
-    if (!activeSynthesis) return false;
-    const query = deferredSearchQuery.trim();
-    if (!query) return true;
-    return fuzzyMatchNote(query, activeSynthesis);
-  }, [activeSynthesis, deferredSearchQuery]);
+    return activeAllNotes;
+  }, [activeAllNotes]);
 
   // Compile available books that currently have notes in the user's stream collection
   const availableBooks = useMemo<AvailableBookInfo[]>(() => {
@@ -959,8 +953,8 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
   const handleTokenClick = (token: string, _sourceVerse: number, note: CommentaryNote, label?: string) => {
     const refString = label || token;
     const parsed = parseScriptureReference(refString);
-    if (parsed) {
-      onNavigate(parsed.bookId, parsed.chapter, parsed.verse || 1);
+    if (parsed && (parsed.verse !== undefined || !token.startsWith('@v:'))) {
+      onNavigate(parsed.bookId, parsed.chapter, parsed.verse);
       return;
     }
     if (token.startsWith('@v:')) {
@@ -1013,8 +1007,17 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
 
   return (
     <div className="w-full min-h-screen selection:bg-[var(--text-selection)] animate-fade-in pb-32">
-      {/* Dynamic Main Top Sticky Header: Notes Search Bar & Toolbar */}
-      <header className="sticky top-0 z-40 bg-[var(--bg-omnibar)] backdrop-blur-md pt-4 sm:pt-5 pb-4 px-4 sm:px-8 transition-colors">
+      {/* Dynamic Main Top Sticky Header: hides on downward scroll, slides back down on upward scroll */}
+      <header
+        ref={notesHeaderRef}
+        className={`sticky top-0 z-40 omnibar-sticky-chrome bg-[var(--bg-omnibar)] backdrop-blur-md pt-4 sm:pt-5 pb-4 px-4 sm:px-8 border-b transition-colors ${
+          isNotesHeaderVisible ? 'pointer-events-auto' : 'is-omnibar-hidden pointer-events-none'
+        } ${
+          isNotesScrolledPastTop && isNotesHeaderVisible
+            ? 'border-[var(--line-subtle)]/70 shadow-sm'
+            : 'border-transparent'
+        }`}
+      >
         <div className="max-w-7xl mx-auto flex flex-col">
           {/* Search Row */}
           <div className="flex items-center gap-3 text-[var(--text-subtle)] focus-within:text-[var(--text-primary)] transition-colors py-1">
@@ -1156,7 +1159,7 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
       {/* Main Content Area */}
       <div className="w-full max-w-2xl mx-auto px-6 sm:px-8 py-8 md:py-12 font-sans">
 
-      {/* Active Synthesis or Loading State (never displayed inside Deleted notes view) */}
+      {/* Active Synthesis Loading State (never displayed inside Deleted notes view) */}
       {filters.noteType !== 'deleted' && isSynthesizing && (
         <section className="mb-14 pt-2 border-b border-[var(--line-subtle)] pb-10 animate-pulse">
           <div className="flex items-center gap-2 mb-4">
@@ -1175,60 +1178,7 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
         </section>
       )}
 
-      {!isSynthesizing &&
-        activeSynthesis &&
-        filters.noteType !== 'scripture' &&
-        filters.noteType !== 'deleted' &&
-        activeSynthesisMatchesSearch && (
-        <section className="mb-14 pt-2 group relative border-b border-[var(--line-subtle)] pb-12 animate-fade-in">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <span className="font-sans text-xs font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
-                Synthesis
-              </span>
-              {activeSynthesis.isStarred && (
-                <span className="text-[10px] font-sans font-medium uppercase tracking-wider text-[var(--text-primary)] bg-[var(--text-primary)]/10 px-1.5 py-0.5 rounded">
-                  Bookmarked
-                </span>
-              )}
-              {!isSynthesisRetained(activeSynthesis) && (
-                <span className="text-[10px] font-sans text-[var(--text-subtle)] opacity-60">
-                  · Provisional
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-1 opacity-70 hover:opacity-100 sm:opacity-0 sm:group-hover:opacity-70 sm:hover:!opacity-100 transition-opacity">
-              <StarIconButton
-                isStarred={Boolean(activeSynthesis.isStarred)}
-                onClick={() => void handleToggleStarSynthesis(activeSynthesis)}
-                title={activeSynthesis.isStarred ? 'Saved to collection (Starred)' : 'Bookmark Intelligent Summary to keep permanently'}
-                ariaLabel={activeSynthesis.isStarred ? 'Remove bookmark from Intelligent Summary' : 'Bookmark Intelligent Summary'}
-              />
-              <DeleteIconButton
-                onClick={() => void handleDiscardSynthesis(activeSynthesis)}
-                title="Discard Intelligent Summary"
-                ariaLabel="Discard Intelligent Summary"
-              />
-            </div>
-          </div>
-
-          <SynthesisHeroBlockquote
-            quoteText={activeSynthesis.synthesisQuote || activeSynthesis.content}
-            footnotes={
-              activeSynthesis.sourceFootnotes && activeSynthesis.sourceFootnotes.length > 0
-                ? activeSynthesis.sourceFootnotes
-                : (activeSynthesis.sourceReferences || []).map((r) => ({ ref: r }))
-            }
-            userCommentary={activeSynthesis.content}
-            onUpdateCommentary={(newVal) => void handleUpdateNote(activeSynthesis, newVal)}
-            onNavigateReference={handleReferenceNavigate}
-            isMobile={isMobile}
-            searchQuery={deferredSearchQuery}
-          />
-        </section>
-      )}
-
-      {/* Main Notes Stream */}
+      {/* Main Notes Stream (All note types displayed chronologically by default) */}
       <div className="flex flex-col gap-14">
         {/* Compose Plain Note Form (Exact same format as normal verse note: zero background, zero borders) */}
         {isComposingPlainNote && (
@@ -1459,13 +1409,18 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
                   : (note.sourceReferences || []).map((r) => ({ ref: r }));
 
               return (
-                <div key={note.id} className="note-stream-card pt-2 group relative">
+                <div key={note.id} id={`note-card-${note.id}`} className="note-stream-card pt-2 group relative">
                   <div className="flex items-center justify-between mb-3 text-xs font-sans text-[var(--text-subtle)]">
                     <div className="flex items-center gap-2">
                       <span className="opacity-60">Synthesis · {formatNoteDate(note.updatedAt || note.createdAt)}</span>
                       {note.isStarred && (
                         <span className="text-[10px] uppercase tracking-wider text-[var(--text-primary)] bg-[var(--text-primary)]/10 px-1.5 py-0.5 rounded">
                           Bookmarked
+                        </span>
+                      )}
+                      {!isSynthesisRetained(note) && (
+                        <span className="text-[10px] font-sans text-[var(--text-subtle)] opacity-60">
+                          · Provisional
                         </span>
                       )}
                     </div>

@@ -113,6 +113,63 @@ CREATE POLICY "Users can manage their own settings"
     USING (auth.uid() = user_id)
     WITH CHECK (auth.uid() = user_id);
 
+-- 5. Create the `reading_plans` table (isolated per user)
+CREATE TABLE IF NOT EXISTS public.reading_plans (
+    id TEXT PRIMARY KEY,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    is_preset BOOLEAN NOT NULL DEFAULT FALSE,
+    preset_key TEXT,
+    scope TEXT NOT NULL,
+    duration_days INTEGER NOT NULL,
+    days_per_week INTEGER NOT NULL,
+    track_style TEXT NOT NULL,
+    custom_book_ids JSONB,
+    start_date BIGINT NOT NULL,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+    completed_days JSONB DEFAULT '[]'::jsonb,
+    completed_portions JSONB DEFAULT '{}'::jsonb,
+    deleted_at BIGINT
+);
+
+CREATE INDEX IF NOT EXISTS idx_reading_plans_user_id ON public.reading_plans(user_id);
+CREATE INDEX IF NOT EXISTS idx_reading_plans_updated_at ON public.reading_plans(updated_at DESC);
+
+ALTER TABLE public.reading_plans ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can only read their own reading plans" ON public.reading_plans;
+DROP POLICY IF EXISTS "Users can only insert their own reading plans" ON public.reading_plans;
+DROP POLICY IF EXISTS "Users can only update their own reading plans" ON public.reading_plans;
+DROP POLICY IF EXISTS "Users can only delete their own reading plans" ON public.reading_plans;
+
+CREATE POLICY "Users can only read their own reading plans"
+    ON public.reading_plans
+    FOR SELECT
+    TO authenticated
+    USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can only insert their own reading plans"
+    ON public.reading_plans
+    FOR INSERT
+    TO authenticated
+    WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
+
+CREATE POLICY "Users can only update their own reading plans"
+    ON public.reading_plans
+    FOR UPDATE
+    TO authenticated
+    USING (auth.uid() = user_id)
+    WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can only delete their own reading plans"
+    ON public.reading_plans
+    FOR DELETE
+    TO authenticated
+    USING (auth.uid() = user_id);
+
 -- 5. Security Architecture for Unauthenticated / Guest Users:
 -- By default, Reneu operates strictly LOCAL-FIRST for guests (persisted securely
 -- inside client IndexedDB via Dexie without transmitting private reflections over the wire).

@@ -32,7 +32,11 @@ import type {
   ReadingPlan,
 } from './types/readingPlan';
 import { getAssignedChaptersForDay } from './services/readingPlanEngine';
-import { setDayCompletionState } from './services/readingPlanStorage';
+import {
+  setDayCompletionState,
+  ensurePlansInitialized,
+  getAllReadingPlans,
+} from './services/readingPlanStorage';
 import {
   parseOmnibarAction,
   parseScriptureReference,
@@ -43,6 +47,7 @@ import {
 import { VerseRow } from './components/VerseRow';
 import { CopiedToast } from './components/CopiedToast';
 import { checkSimulateSplash, checkSimulateLoginSplash } from './utils/devSimulation';
+import { useAutoHideHeader } from './utils/useAutoHideHeader';
 import { getCurrentUser, onAuthStateChange, syncAllWithCloud, type SupabaseUserProfile } from './services/bibleStorage';
 import { NotesViewSkeleton } from './components/NotesViewSkeleton';
 import { SettingsViewSkeleton } from './components/SettingsViewSkeleton';
@@ -109,6 +114,7 @@ export const App: React.FC = () => {
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState<number>(0);
   const [focusedVerse, setFocusedVerse] = useState<number | null>(null);
   const targetScrollVerseRef = useRef<number | null>(null);
+  const [scrollRequestSeq, setScrollRequestSeq] = useState<number>(0);
   const [exposedNotes, setExposedNotes] = useState<Set<string>>(() => getInitialExposedNotesSync());
   const [copiedToast, setCopiedToast] = useState<{ reference: string } | null>(null);
   const [isComposingPlainNote, setIsComposingPlainNote] = useState<boolean>(false);
@@ -190,6 +196,7 @@ export const App: React.FC = () => {
   }, []);
 
   const commandInputRef = useRef<HTMLInputElement | null>(null);
+  const skipBlurResetRef = useRef<boolean>(false);
 
   // Active dock tab index & FLIP slide animation (resize geometry stays locked in CSS)
   const dockIndicatorRef = useRef<HTMLDivElement>(null);
@@ -197,16 +204,16 @@ export const App: React.FC = () => {
   const prevViewRef = useRef(currentView);
   const dockNavRef = useRef<HTMLElement>(null);
   const readerBtnRef = useRef<HTMLButtonElement>(null);
-  const plansBtnRef = useRef<HTMLButtonElement>(null);
   const notesBtnRef = useRef<HTMLButtonElement>(null);
+  const plansBtnRef = useRef<HTMLButtonElement>(null);
   const settingsBtnRef = useRef<HTMLButtonElement>(null);
 
   const activeDockIndex =
     currentView === 'reader'
       ? 0
-      : currentView === 'plans'
-      ? 1
       : currentView === 'notes'
+      ? 1
+      : currentView === 'plans'
       ? 2
       : 3;
 
@@ -254,6 +261,30 @@ export const App: React.FC = () => {
     );
   }, [currentView]);
 
+  // Reset shared window scroll to top when switching into non-reader views (e.g. Notes)
+  useLayoutEffect(() => {
+    if (currentView !== 'reader') {
+      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    }
+  }, [currentView]);
+
+  const handleSelectTab = useCallback(
+    (view: 'reader' | 'notes' | 'plans' | 'settings') => {
+      if (currentView === view) {
+        const prefersReduced =
+          typeof window !== 'undefined' &&
+          window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        window.scrollTo({
+          top: 0,
+          behavior: (prefersReduced ? 'instant' : 'smooth') as ScrollBehavior,
+        });
+        return;
+      }
+      setCurrentView(view);
+    },
+    [currentView]
+  );
+
   // Initial load
   useEffect(() => {
     let mounted = true;
@@ -262,6 +293,7 @@ export const App: React.FC = () => {
       getAppearanceSettings(),
       getExposedNotes(),
       ensureNotesInitialized(),
+      ensurePlansInitialized(),
     ]).then(
       async ([savedPos, savedAppearance, savedExposed]) => {
         if (!mounted) return;
@@ -390,20 +422,50 @@ export const App: React.FC = () => {
     };
   }, [position, appInitialized]);
 
-  // Smooth scroll to target focused verse only when explicitly requested by external navigation (search, hash, plan)
-  useEffect(() => {
-    if (!isLoading && chapterData && targetScrollVerseRef.current !== null) {
+  const isChapterReady =
+    !isLoading &&
+    chapterData !== null &&
+    chapterData.bookId === position.bookId &&
+    chapterData.chapter === position.chapter;
+
+  const scrollVerseToViewportCenter = useCallback((verseNum: number): boolean => {
+    const el = document.getElementById(`verse-${verseNum}`);
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const effectiveHeight = Math.min(rect.height, window.innerHeight * 0.65);
+    const targetTop = rect.top + window.scrollY - (window.innerHeight - effectiveHeight) / 2;
+    const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    const clampedTop = Math.max(0, Math.min(targetTop, maxScroll));
+    window.scrollTo({ top: clampedTop, behavior: 'instant' as ScrollBehavior });
+    return true;
+  }, []);
+
+  // Position Reader already scrolled to the target verse in the middle of the viewport before first paint
+  useLayoutEffect(() => {
+    if (
+      currentView !== 'reader' ||
+      isLoading ||
+      !chapterData ||
+      chapterData.bookId !== position.bookId ||
+      chapterData.chapter !== position.chapter
+    ) {
+      return;
+    }
+
+    if (targetScrollVerseRef.current !== null) {
       const targetVerse = targetScrollVerseRef.current;
       targetScrollVerseRef.current = null;
-      const timer = setTimeout(() => {
-        const el = document.getElementById(`verse-${targetVerse}`);
-        if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-      }, 60);
-      return () => clearTimeout(timer);
+      scrollVerseToViewportCenter(targetVerse);
     }
-  }, [isLoading, chapterData]);
+  }, [
+    currentView,
+    isLoading,
+    chapterData,
+    position.bookId,
+    position.chapter,
+    scrollRequestSeq,
+    scrollVerseToViewportCenter,
+  ]);
 
   // Manage HTML PWA splash screen dismissal (honoring VITE_SIMULATE_SPLASH / ?splash=true)
   useEffect(() => {
@@ -498,6 +560,7 @@ export const App: React.FC = () => {
       }
 
       if (target.verse) {
+        targetScrollVerseRef.current = target.verse;
         setFocusedVerse(target.verse);
         const verseKey = `${target.bookId}:${target.chapter}:${target.verse}`;
         setExposedNotes((prev) => {
@@ -507,13 +570,9 @@ export const App: React.FC = () => {
           void saveExposedNotes(Array.from(next));
           return next;
         });
-        setTimeout(() => {
-          const el = document.getElementById(`verse-${target.verse}`);
-          if (el) {
-            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }
-        }, 100);
+        setScrollRequestSeq((prev) => prev + 1);
       } else {
+        targetScrollVerseRef.current = null;
         setFocusedVerse(null);
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
@@ -577,6 +636,23 @@ export const App: React.FC = () => {
     return getOmnibarSuggestions(command, position.bookId, position.chapter, 7);
   }, [isSuggestionsOpen, command, position.bookId, position.chapter]);
 
+  useEffect(() => {
+    if (!isSuggestionsOpen || omnibarSuggestions.length === 0) return;
+    const activeItem = omnibarSuggestions[activeSuggestionIndex];
+    if (!activeItem) return;
+    document
+      .getElementById(`omnibar-option-${activeItem.id}`)
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [isSuggestionsOpen, activeSuggestionIndex, omnibarSuggestions]);
+
+  const blurCommandInput = useCallback(() => {
+    skipBlurResetRef.current = true;
+    commandInputRef.current?.blur();
+    window.setTimeout(() => {
+      skipBlurResetRef.current = false;
+    }, 0);
+  }, []);
+
   const selectOmnibarSuggestion = useCallback(
     (suggestion: OmnibarSuggestion) => {
       const validatedLabel = formatNavigationLabel(suggestion.target);
@@ -584,47 +660,69 @@ export const App: React.FC = () => {
       setIsSuggestionsOpen(false);
       setActiveSuggestionIndex(0);
       navigateToPosition(suggestion.target);
-      commandInputRef.current?.blur();
+      blurCommandInput();
     },
-    [navigateToPosition]
+    [navigateToPosition, blurCommandInput]
   );
 
-  const handleCommandSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const lowerCmd = command.trim().toLowerCase();
-    const currentLabel = formatNavigationLabel(position);
+  const executeCommandSubmit = useCallback(() => {
+    const trimmed = command.trim();
+    const lowerCmd = trimmed.toLowerCase();
+    const currentLabel = formatNavigationLabel({
+      bookId: position.bookId,
+      chapter: position.chapter,
+      ...(focusedVerse ? { verse: focusedVerse } : {}),
+    });
 
     if (lowerCmd === '/plans' || lowerCmd === '/plan' || lowerCmd === 'plans' || lowerCmd === 'plan') {
       setCurrentView('plans');
       setCommand(currentLabel);
       setIsSuggestionsOpen(false);
-      commandInputRef.current?.blur();
+      blurCommandInput();
       return;
     }
     if (lowerCmd === '/notes' || lowerCmd === '/note' || lowerCmd === 'notes') {
       setCurrentView('notes');
       setCommand(currentLabel);
       setIsSuggestionsOpen(false);
-      commandInputRef.current?.blur();
+      blurCommandInput();
       return;
     }
     if (lowerCmd === '/settings' || lowerCmd === 'settings') {
       setCurrentView('settings');
       setCommand(currentLabel);
       setIsSuggestionsOpen(false);
-      commandInputRef.current?.blur();
+      blurCommandInput();
       return;
     }
 
-    if (
-      isSuggestionsOpen &&
-      omnibarSuggestions.length > 0 &&
-      activeSuggestionIndex >= 0 &&
-      activeSuggestionIndex < omnibarSuggestions.length &&
-      !['parchment', 'white', 'light', 'black', 'dark', 'theme parchment', 'theme white', 'theme light', 'theme black', 'theme dark'].includes(lowerCmd)
-    ) {
-      selectOmnibarSuggestion(omnibarSuggestions[activeSuggestionIndex]);
-      return;
+    const isThemeCommand = [
+      'parchment',
+      'white',
+      'light',
+      'black',
+      'dark',
+      'theme parchment',
+      'theme white',
+      'theme light',
+      'theme black',
+      'theme dark',
+    ].includes(lowerCmd);
+
+    if (!isThemeCommand && trimmed.length > 0) {
+      const activeSuggestions =
+        isSuggestionsOpen && omnibarSuggestions.length > 0
+          ? omnibarSuggestions
+          : getOmnibarSuggestions(command, position.bookId, position.chapter, 7);
+
+      if (activeSuggestions.length > 0) {
+        const idx =
+          activeSuggestionIndex >= 0 && activeSuggestionIndex < activeSuggestions.length
+            ? activeSuggestionIndex
+            : 0;
+        selectOmnibarSuggestion(activeSuggestions[idx]);
+        return;
+      }
     }
 
     const action = parseOmnibarAction(command, position.bookId, position.chapter);
@@ -634,7 +732,7 @@ export const App: React.FC = () => {
         setAppearance((prev) => ({ ...prev, theme: action.theme }));
         setCommand(currentLabel);
         setIsSuggestionsOpen(false);
-        commandInputRef.current?.blur();
+        blurCommandInput();
         return;
       }
       const target = action.target;
@@ -643,20 +741,29 @@ export const App: React.FC = () => {
       setIsSuggestionsOpen(false);
       setActiveSuggestionIndex(0);
       navigateToPosition(target);
-      commandInputRef.current?.blur();
-      return;
-    }
-
-    // Fuzzy typo fallback when user submits directly
-    const fuzzyMatches = getOmnibarSuggestions(command, position.bookId, position.chapter, 1);
-    if (fuzzyMatches.length > 0) {
-      selectOmnibarSuggestion(fuzzyMatches[0]);
+      blurCommandInput();
       return;
     }
 
     setCommand(currentLabel);
     setIsSuggestionsOpen(false);
-    commandInputRef.current?.blur();
+    blurCommandInput();
+  }, [
+    command,
+    position.bookId,
+    position.chapter,
+    focusedVerse,
+    isSuggestionsOpen,
+    omnibarSuggestions,
+    activeSuggestionIndex,
+    selectOmnibarSuggestion,
+    navigateToPosition,
+    blurCommandInput,
+  ]);
+
+  const handleCommandSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    executeCommandSubmit();
   };
 
   const handleNoteChange = useCallback(
@@ -751,30 +858,19 @@ export const App: React.FC = () => {
     setCopiedToast({ reference });
   };
 
-  const handleNavigateFromNotes = (bookId: number, chapter: number, verse: number) => {
-    navigateToPosition({ bookId, chapter, verse });
+  const handleNavigateFromNotes = (bookId: number, chapter: number, verse?: number) => {
+    navigateToPosition({ bookId, chapter, ...(verse ? { verse } : {}) });
   };
 
   const handleNoteTokenClick = (tokenTarget: string, _sourceVerse?: number, label?: string) => {
     const refString = label || tokenTarget;
     const parsed = parseScriptureReference(refString);
-    if (parsed) {
-      if (parsed.bookId === position.bookId && parsed.chapter === position.chapter) {
-        if (parsed.verse) {
-          const verseKey = `${position.bookId}:${position.chapter}:${parsed.verse}`;
-          setExposedNotes((prev) => {
-            if (prev.has(verseKey)) return prev;
-            const next = new Set(prev);
-            next.add(verseKey);
-            void saveExposedNotes(Array.from(next));
-            return next;
-          });
-          document.getElementById(`verse-${parsed.verse}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          setFocusedVerse(parsed.verse);
-        }
-      } else {
-        handleNavigateFromNotes(parsed.bookId, parsed.chapter, parsed.verse || 1);
-      }
+    if (parsed && (parsed.verse !== undefined || !tokenTarget.startsWith('@v:'))) {
+      navigateToPosition({
+        bookId: parsed.bookId,
+        chapter: parsed.chapter,
+        ...(parsed.verse !== undefined ? { verse: parsed.verse } : {}),
+      });
       return;
     }
 
@@ -787,7 +883,7 @@ export const App: React.FC = () => {
           const ch = parseInt(parts[1], 10);
           const vs = parseInt(parts[2], 10);
           if (!isNaN(bId) && !isNaN(ch) && !isNaN(vs)) {
-            handleNavigateFromNotes(bId, ch, vs);
+            navigateToPosition({ bookId: bId, chapter: ch, verse: vs });
             return;
           }
         }
@@ -796,16 +892,19 @@ export const App: React.FC = () => {
       if (!isNaN(targetVerseNum) && chapterData) {
         const verseObj = chapterData.verses.find((v) => v.verse === targetVerseNum);
         if (verseObj) {
-          document.getElementById(`verse-${verseObj.verse}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          setFocusedVerse(verseObj.verse);
+          navigateToPosition({
+            bookId: position.bookId,
+            chapter: position.chapter,
+            verse: verseObj.verse,
+          });
         }
       }
     }
   };
 
   const handleScrollToVerse = (verseNum: number) => {
-    document.getElementById(`verse-${verseNum}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     setFocusedVerse(verseNum);
+    scrollVerseToViewportCenter(verseNum);
   };
 
   // Performance: Constant-time O(1) map of commentary notes by verse
@@ -989,6 +1088,34 @@ export const App: React.FC = () => {
     });
   }, []);
 
+  // Clear or reconcile active planReadingSession when plans are deleted or cloud-synced
+  useEffect(() => {
+    const handlePlanDeleted = (e: Event) => {
+      const deletedId = (e as CustomEvent<{ planId?: string }>).detail?.planId;
+      if (!deletedId) return;
+      setPlanReadingSession((prev) => (prev?.planId === deletedId ? null : prev));
+    };
+
+    const handlePlansSynced = async () => {
+      const plans = await getAllReadingPlans();
+      setPlanReadingSession((prev) => {
+        if (!prev) return null;
+        const match = plans.find((p) => p.id === prev.planId);
+        if (!match) return null;
+        const isDayFinished = Boolean(match.completedDays?.includes(prev.dayNumber));
+        if (prev.isDayFinished === isDayFinished && prev.planTitle === match.title) return prev;
+        return { ...prev, planTitle: match.title, isDayFinished };
+      });
+    };
+
+    window.addEventListener('reneu:plan-deleted', handlePlanDeleted);
+    window.addEventListener('reneu:plans-synced', handlePlansSynced);
+    return () => {
+      window.removeEventListener('reneu:plan-deleted', handlePlanDeleted);
+      window.removeEventListener('reneu:plans-synced', handlePlansSynced);
+    };
+  }, []);
+
   // Synchronize currentChapterIndex if position changes within active plan readings
   useEffect(() => {
     if (!planReadingSession) return;
@@ -1002,21 +1129,104 @@ export const App: React.FC = () => {
     }
   }, [position.bookId, position.chapter, planReadingSession]);
 
-  // Scroll progress within current active chapter for plan mode reading progress bar
+  // Scroll progress within current active chapter & shrinking sticky Reader omnibar
   const [chapterScrollProgress, setChapterScrollProgress] = useState<number>(0);
+  const [isReaderOmnibarFocused, setIsReaderOmnibarFocused] = useState<boolean>(false);
+  const [isReaderOmnibarManuallyExpanded, setIsReaderOmnibarManuallyExpanded] = useState<boolean>(false);
+  const readerChromeRef = useRef<HTMLDivElement>(null);
   const readerOmnibarRef = useRef<HTMLElement>(null);
-  const planBarRef = useRef<HTMLDivElement>(null);
-  const [isPlanBarPinned, setIsPlanBarPinned] = useState(false);
-  const [planBarHeight, setPlanBarHeight] = useState<number>(45);
+  const readerFullRowRef = useRef<HTMLDivElement>(null);
+  const expandedScrollAnchorYRef = useRef<number>(0);
+
+  const {
+    isVisible: isReaderOmnibarVisible,
+    isScrolledPastTop: isReaderScrolledPastTop,
+  } = useAutoHideHeader({
+    headerRef: readerOmnibarRef,
+    enabled: currentView === 'reader',
+    forceVisible: isReaderOmnibarFocused || (isSuggestionsOpen && omnibarSuggestions.length > 0),
+    resetKey: `${currentView}-${position.bookId}-${position.chapter}-${isChapterReady ? 1 : 0}-${scrollRequestSeq}`,
+    showUpDelta: 2,
+    measureHeight: false,
+  });
+
+  const isReaderOmnibarFull =
+    isReaderOmnibarVisible ||
+    isReaderOmnibarManuallyExpanded ||
+    isReaderOmnibarFocused ||
+    (isSuggestionsOpen && omnibarSuggestions.length > 0);
+
+  // Measure the uncollapsed full-row height directly (constant during compact/expand transitions)
+  useLayoutEffect(() => {
+    if (currentView !== 'reader') return;
+    const chromeEl = readerChromeRef.current;
+    const fullRowEl = readerFullRowRef.current;
+    if (!chromeEl || !fullRowEl) return;
+
+    const syncStaticChromeMetrics = () => {
+      const fullOmnibarH = Math.round(fullRowEl.offsetHeight);
+      const planBarEl = chromeEl.querySelector<HTMLElement>('[data-reader-plan-bar]');
+      const planBarH = planBarEl ? Math.round(planBarEl.offsetHeight) : 0;
+      if (fullOmnibarH > 0) {
+        chromeEl.style.setProperty('--reader-omni-full-h', `${fullOmnibarH}px`);
+        chromeEl.style.setProperty('--reader-chrome-full-h', `${fullOmnibarH + planBarH}px`);
+      }
+    };
+
+    syncStaticChromeMetrics();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(syncStaticChromeMetrics);
+      ro.observe(fullRowEl);
+      return () => ro.disconnect();
+    }
+  }, [currentView, Boolean(planReadingSession)]);
+
+  // Clear manual tap-expansion when upward scroll naturally restores omnibar, switching views, or changing chapter
+  useEffect(() => {
+    if (currentView !== 'reader' || isReaderOmnibarVisible) {
+      setIsReaderOmnibarManuallyExpanded(false);
+    }
+  }, [currentView, isReaderOmnibarVisible, position.bookId, position.chapter]);
+
+  // Collapse manually expanded omnibar once the user resumes scrolling downward
+  useEffect(() => {
+    if (currentView !== 'reader' || !isReaderOmnibarManuallyExpanded) return;
+
+    const handleScrollCollapse = () => {
+      const y = window.scrollY || 0;
+      if (y < expandedScrollAnchorYRef.current) {
+        expandedScrollAnchorYRef.current = y;
+      }
+      if (!isReaderOmnibarFocused && !isSuggestionsOpen && y - expandedScrollAnchorYRef.current >= 14) {
+        setIsReaderOmnibarManuallyExpanded(false);
+      }
+    };
+
+    window.addEventListener('scroll', handleScrollCollapse, { passive: true });
+    return () => window.removeEventListener('scroll', handleScrollCollapse);
+  }, [currentView, isReaderOmnibarManuallyExpanded, isReaderOmnibarFocused, isSuggestionsOpen]);
+
+  const handleExpandCompactOmnibar = useCallback(() => {
+    expandedScrollAnchorYRef.current = window.scrollY || 0;
+    setIsReaderOmnibarManuallyExpanded(true);
+  }, []);
+
+  const compactOmnibarLabel = useMemo(() => {
+    if (
+      chapterData &&
+      chapterData.bookId === position.bookId &&
+      chapterData.chapter === position.chapter
+    ) {
+      return `${chapterData.bookName} ${chapterData.chapter}`;
+    }
+    const b = getBookById(position.bookId);
+    return `${b?.name || 'Scripture'} ${position.chapter}`.trim();
+  }, [chapterData, position.bookId, position.chapter]);
 
   useEffect(() => {
     if (currentView !== 'reader' || !planReadingSession) {
-      setIsPlanBarPinned(false);
       return;
-    }
-
-    if (planBarRef.current) {
-      setPlanBarHeight(planBarRef.current.offsetHeight || 45);
     }
 
     let ticking = false;
@@ -1032,10 +1242,6 @@ export const App: React.FC = () => {
           } else {
             setChapterScrollProgress(1);
           }
-
-          const omniHeight = readerOmnibarRef.current?.offsetHeight || 66;
-          const pinned = window.scrollY >= omniHeight;
-          setIsPlanBarPinned((prev) => (prev !== pinned ? pinned : prev));
 
           ticking = false;
         });
@@ -1128,14 +1334,20 @@ export const App: React.FC = () => {
         }
 
         if (e.key === 'ArrowRight' || e.key === 'l') {
-          const currentBook = getBookById(position.bookId);
-          if (position.chapter < currentBook.chapterCount) {
-            handleNavigateToChapter(position.bookId, position.chapter + 1);
-          } else if (position.bookId < CANONICAL_BOOKS.length) {
-            handleNavigateToChapter(position.bookId + 1, 1);
+          if (planReadingSession) {
+            handleNavigatePlanChapter('next');
+          } else {
+            const currentBook = getBookById(position.bookId);
+            if (position.chapter < currentBook.chapterCount) {
+              handleNavigateToChapter(position.bookId, position.chapter + 1);
+            } else if (position.bookId < CANONICAL_BOOKS.length) {
+              handleNavigateToChapter(position.bookId + 1, 1);
+            }
           }
         } else if (e.key === 'ArrowLeft' || e.key === 'h') {
-          if (position.chapter > 1) {
+          if (planReadingSession) {
+            handleNavigatePlanChapter('prev');
+          } else if (position.chapter > 1) {
             handleNavigateToChapter(position.bookId, position.chapter - 1);
           } else if (position.bookId > 1) {
             const prevBook = getBookById(position.bookId - 1);
@@ -1149,7 +1361,7 @@ export const App: React.FC = () => {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [copiedToast, currentView, position, handleHistoryBack, handleHistoryForward, handleNavigateToChapter]);
+  }, [copiedToast, currentView, position, planReadingSession, handleHistoryBack, handleHistoryForward, handleNavigateToChapter, handleNavigatePlanChapter]);
 
   const getNoteForVerse = (verse: number) => {
     return notes.find((n) => n.startVerse === verse);
@@ -1188,14 +1400,51 @@ export const App: React.FC = () => {
       {/* Dismissible Splash Install Elicitation Banner (hidden if already installed or dismissed) */}
       <SplashInstallBanner />
 
-      {/* Omnibar Header for Reader View: scrolls away with the page content */}
+      {/* Sticky Reader Top Chrome: shrinks to book & chapter on downward scroll; expands on tap or upward scroll */}
       {currentView === 'reader' && (
-        <header
-          ref={readerOmnibarRef}
-          className={`relative ${
-            isSuggestionsOpen && omnibarSuggestions.length > 0 ? 'z-40' : 'z-20'
-          } bg-[var(--bg-omnibar)] backdrop-blur-md pt-4 sm:pt-5 pb-4 px-4 sm:px-8 transition-colors`}
+        <div
+          ref={readerChromeRef}
+          className="sticky top-0 z-40 reader-omnibar-shell pointer-events-none"
         >
+          <header
+            ref={readerOmnibarRef}
+            className={`relative z-20 pointer-events-auto bg-[var(--bg-omnibar)] backdrop-blur-md reader-omnibar-header border-b ${
+              isReaderOmnibarFull ? 'is-expanded' : 'is-compact'
+            } ${
+              isSuggestionsOpen && omnibarSuggestions.length > 0 ? 'has-suggestions' : ''
+            } ${
+              !planReadingSession && (isReaderScrolledPastTop || !isReaderOmnibarFull)
+                ? 'border-[var(--line-subtle)]/70 shadow-sm'
+                : 'border-transparent'
+            }`}
+          >
+          {/* Compact Shrunk State: Book & Chapter Name Only (tap to expand full omnibar) */}
+          <div
+            className={`reader-omnibar-compact-layer ${
+              isReaderOmnibarFull ? 'opacity-0 pointer-events-none' : 'opacity-100 pointer-events-auto'
+            }`}
+            aria-hidden={isReaderOmnibarFull}
+          >
+            <button
+              type="button"
+              tabIndex={isReaderOmnibarFull ? -1 : 0}
+              onClick={handleExpandCompactOmnibar}
+              className="w-full max-w-7xl mx-auto flex items-center justify-center py-0.5 text-center font-sans text-sm sm:text-base font-semibold tracking-tight text-[var(--text-primary)] hover:opacity-75 transition-opacity cursor-pointer select-none"
+              title={`Tap to expand navigation (${compactOmnibarLabel})`}
+              aria-label={`Expand navigation bar (${compactOmnibarLabel})`}
+            >
+              <span className="truncate">{compactOmnibarLabel}</span>
+            </button>
+          </div>
+
+          {/* Full Omnibar & Features */}
+          <div
+            ref={readerFullRowRef}
+            className={`reader-omnibar-full-layer pt-4 sm:pt-5 pb-4 px-4 sm:px-8 ${
+              isReaderOmnibarFull ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+            }`}
+            aria-hidden={!isReaderOmnibarFull}
+          >
           <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
             <form onSubmit={handleCommandSubmit} className="flex-1 min-w-0 flex items-center gap-2 sm:gap-3 py-1">
               {/* Back Button (History Navigation - Left End of Search Bar) */}
@@ -1294,6 +1543,7 @@ export const App: React.FC = () => {
                 <input
                   ref={commandInputRef}
                   type="text"
+                  enterKeyHint="go"
                   value={command}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -1302,6 +1552,11 @@ export const App: React.FC = () => {
                     setIsSuggestionsOpen(val.trim().length > 0);
                   }}
                   onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      executeCommandSubmit();
+                      return;
+                    }
                     if (e.key === 'ArrowDown' && omnibarSuggestions.length > 0) {
                       e.preventDefault();
                       setActiveSuggestionIndex((prev) => (prev + 1) % omnibarSuggestions.length);
@@ -1325,9 +1580,19 @@ export const App: React.FC = () => {
                       }
                     }
                   }}
+                  onFocus={() => setIsReaderOmnibarFocused(true)}
                   onBlur={() => {
+                    setIsReaderOmnibarFocused(false);
                     setIsSuggestionsOpen(false);
-                    setCommand(formatNavigationLabel(position));
+                    if (!skipBlurResetRef.current) {
+                      setCommand(
+                        formatNavigationLabel({
+                          bookId: position.bookId,
+                          chapter: position.chapter,
+                          ...(focusedVerse ? { verse: focusedVerse } : {}),
+                        })
+                      );
+                    }
                   }}
                   placeholder={
                     chapterData
@@ -1348,6 +1613,10 @@ export const App: React.FC = () => {
                   aria-autocomplete="list"
                   aria-label="Scripture navigation and search omnibar"
                 />
+                {/* Hidden submit control required by iOS WebKit so keyboard submit/[check] triggers form submission */}
+                <button type="submit" tabIndex={-1} aria-hidden="true" className="sr-only">
+                  Go
+                </button>
                 {command && (
                   <button
                     type="button"
@@ -1375,7 +1644,7 @@ export const App: React.FC = () => {
                     role="listbox"
                     aria-label="Scripture suggestions"
                     onMouseDown={(e) => e.preventDefault()}
-                    className="absolute left-0 right-0 top-full mt-2 z-50 rounded-xl border border-[var(--line-subtle)] bg-[var(--bg-surface)] shadow-lg overflow-hidden py-1"
+                    className="absolute left-0 right-0 top-full mt-2 z-50 max-h-64 sm:max-h-72 overflow-y-auto overscroll-contain rounded-xl border border-[var(--line-subtle)] bg-[var(--bg-surface)] shadow-lg py-1"
                   >
                     {omnibarSuggestions.map((item, idx) => {
                       const isActive = idx === activeSuggestionIndex;
@@ -1460,21 +1729,17 @@ export const App: React.FC = () => {
               )}
             </div>
           </div>
+          </div>
         </header>
-      )}
 
-      {/* Plan Mode Completion Bar: under the main omnibar, fixed/pinned at top of viewport when scrolling */}
-      {currentView === 'reader' && planReadingSession && (
-        <>
-          {isPlanBarPinned && (
-            <div style={{ height: planBarHeight }} aria-hidden="true" />
-          )}
-          <div
-            ref={planBarRef}
-            className={`${
-              isPlanBarPinned ? 'fixed top-0 left-0 right-0 z-40 shadow-sm' : 'relative z-30'
-            } border-b border-[var(--line-subtle)] bg-[var(--bg-omnibar)] backdrop-blur-md px-4 sm:px-8 py-2 sm:py-2.5 transition-colors`}
-          >
+          {/* Plan Mode Completion Bar: rides cleanly beneath the omnibar (full or shrunk) */}
+          {planReadingSession && (
+            <div
+              data-reader-plan-bar
+              className={`relative z-10 pointer-events-auto border-b border-[var(--line-subtle)] bg-[var(--bg-omnibar)] backdrop-blur-md px-4 sm:px-8 py-2 sm:py-2.5 transition-colors ${
+                isReaderScrolledPastTop ? 'shadow-sm' : ''
+              }`}
+            >
           <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 text-xs font-sans">
             <div className="flex items-center gap-2 sm:gap-3 min-w-0">
               <button
@@ -1615,9 +1880,10 @@ export const App: React.FC = () => {
               style={{ width: `${planReadingProgressPercent}%` }}
             />
           </div>
+            </div>
+          )}
         </div>
-      </>
-    )}
+      )}
 
       {/* Sticky Header for Settings View */}
       {currentView === 'settings' && (
@@ -1635,7 +1901,7 @@ export const App: React.FC = () => {
       {/* Main Content Area */}
       {currentView === 'reader' && (
         <main className="max-w-7xl mx-auto px-4 sm:px-8 pt-4 sm:pt-6 md:pt-8 pb-28 sm:pb-32">
-          {isLoading || !chapterData ? (
+          {!isChapterReady || !chapterData ? (
             <ReaderViewSkeleton
               readerFontSizeClass={readerFontSizeClass}
               readerLineSpacingClass={readerLineSpacingClass}
@@ -1671,174 +1937,50 @@ export const App: React.FC = () => {
                 );
               })}
 
-              {/* Next and Previous Chapter Pagination */}
-              <nav
-                aria-label="Chapter pagination"
-                className="mt-16 pt-8 pb-12 border-t border-[var(--line-subtle)] grid grid-cols-3 items-center max-w-2xl lg:max-w-4xl mx-auto w-full select-none gap-2 sm:gap-4"
-              >
-                {planReadingSession ? (
-                  /* Plan Mode Navigation (Sequences through assigned books/chapters for the day) */
-                  <>
-                    <div className="flex justify-start">
-                      {planReadingSession.currentChapterIndex > 0 ? (
-                        <button
-                          type="button"
-                          onClick={() => handleNavigatePlanChapter('prev')}
-                          className={`inline-flex items-center gap-1.5 sm:gap-2 py-2 px-2.5 sm:px-3 -ml-2 sm:-ml-3 rounded hover:bg-[var(--text-primary)]/5 text-[var(--text-subtle)] hover:text-[var(--text-primary)] transition-colors cursor-pointer group text-left ${readerFontFamilyClass}`}
-                          title={`Go to ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1]?.bookName} ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1]?.chapter}`}
-                          aria-label="Previous assigned chapter in plan"
-                        >
-                          <svg
-                            className="w-4 h-4 sm:w-5 sm:h-5 shrink-0 transition-transform group-hover:-translate-x-0.5"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                          >
-                            <line x1="19" y1="12" x2="5" y2="12" />
-                            <polyline points="12 19 5 12 12 5" />
-                          </svg>
-                          <span className="text-sm sm:text-base font-medium">
-                            {planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1]?.bookName}{' '}
-                            {planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1]?.chapter}
-                          </span>
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setCurrentView('plans')}
-                          className="inline-flex items-center gap-1.5 py-2 px-2.5 -ml-2 rounded hover:bg-[var(--text-primary)]/5 text-[var(--text-subtle)] hover:text-[var(--text-primary)] transition-colors cursor-pointer text-xs sm:text-sm font-sans"
-                        >
-                          <span aria-hidden="true">←</span>
-                          <span>Back to Plan</span>
-                        </button>
-                      )}
-                    </div>
+              {/* Plan Mode Day Completion Footer (when reading inside a Plan) */}
+              {planReadingSession && (
+                <div
+                  className="mt-16 pt-8 pb-4 border-t border-[var(--line-subtle)] flex items-center justify-between max-w-2xl lg:max-w-4xl mx-auto w-full select-none gap-4"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setCurrentView('plans')}
+                    className="inline-flex items-center gap-1.5 py-2 px-2.5 -ml-2 rounded hover:bg-[var(--text-primary)]/5 text-[var(--text-subtle)] hover:text-[var(--text-primary)] transition-colors cursor-pointer text-xs sm:text-sm font-sans"
+                  >
+                    <span aria-hidden="true">←</span>
+                    <span>Back to Plan</span>
+                  </button>
 
-                    <div className={`text-center flex flex-col items-center ${readerFontFamilyClass}`}>
-                      <span className="text-sm sm:text-base font-medium text-[var(--text-primary)]">
-                        {chapterData.bookName} {chapterData.chapter}
-                      </span>
-                      <span className="text-[11px] font-sans text-[var(--text-subtle)]">
-                        Day {planReadingSession.dayNumber} · Chapter {planReadingSession.currentChapterIndex + 1} of{' '}
-                        {planReadingSession.assignedChapters.length}
-                      </span>
-                    </div>
-
-                    <div className="flex justify-end">
-                      {planReadingSession.currentChapterIndex < planReadingSession.assignedChapters.length - 1 ? (
-                        <button
-                          type="button"
-                          onClick={() => handleNavigatePlanChapter('next')}
-                          className={`inline-flex items-center gap-1.5 sm:gap-2 py-2 px-2.5 sm:px-3 -mr-2 sm:-mr-3 rounded hover:bg-[var(--text-primary)]/5 text-[var(--text-subtle)] hover:text-[var(--text-primary)] transition-colors cursor-pointer group text-right ${readerFontFamilyClass}`}
-                          title={`Go to ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1]?.bookName} ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1]?.chapter}`}
-                          aria-label="Next assigned chapter in plan"
-                        >
-                          <span className="text-sm sm:text-base font-medium">
-                            {planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1]?.bookName}{' '}
-                            {planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1]?.chapter}
-                          </span>
-                          <svg
-                            className="w-4 h-4 sm:w-5 sm:h-5 shrink-0 transition-transform group-hover:translate-x-0.5"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                          >
-                            <line x1="5" y1="12" x2="19" y2="12" />
-                            <polyline points="12 5 19 12 12 19" />
-                          </svg>
-                        </button>
-                      ) : (
-                        /* Last assigned chapter of the day: Says "Finished" or "End" */
-                        <button
-                          type="button"
-                          onClick={() => void handleFinishPlanDay()}
-                          className={`inline-flex items-center gap-1.5 py-2 px-4 rounded-full transition-all cursor-pointer font-sans text-xs sm:text-sm font-semibold shadow-sm ${
-                            planReadingSession.isDayFinished
-                              ? 'bg-emerald-600 text-white dark:bg-emerald-500'
-                              : 'bg-[var(--text-primary)] text-[var(--bg-app)] hover:opacity-90 active:scale-95'
-                          }`}
-                          title="Finish day reading"
-                        >
-                          <span>{planReadingSession.isDayFinished ? 'Finished ✓' : 'Finish Reading'}</span>
-                        </button>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  /* Normal Canonical Reader Pagination */
-                  <>
-                    <div className="flex justify-start">
-                      {prevChapterTarget ? (
-                        <button
-                          type="button"
-                          onClick={() => handleNavigateToChapter(prevChapterTarget.bookId, prevChapterTarget.chapter)}
-                          className={`inline-flex items-center gap-1.5 sm:gap-2 py-2 px-2.5 sm:px-3 -ml-2 sm:-ml-3 rounded hover:bg-[var(--text-primary)]/5 text-[var(--text-subtle)] hover:text-[var(--text-primary)] transition-colors cursor-pointer group text-left ${readerFontFamilyClass}`}
-                          title={`Go to ${prevChapterTarget.label}`}
-                          aria-label={`Go to ${prevChapterTarget.label}`}
-                        >
-                          <svg
-                            className="w-4 h-4 sm:w-5 sm:h-5 shrink-0 transition-transform group-hover:-translate-x-0.5"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                          >
-                            <line x1="19" y1="12" x2="5" y2="12" />
-                            <polyline points="12 19 5 12 12 5" />
-                          </svg>
-                          <span className="text-sm sm:text-base font-medium">
-                            {prevChapterTarget.label}
-                          </span>
-                        </button>
-                      ) : null}
-                    </div>
-
-                    <div className={`text-center text-sm sm:text-base font-medium text-[var(--text-primary)] ${readerFontFamilyClass}`}>
+                  <div className={`text-center hidden sm:flex flex-col items-center ${readerFontFamilyClass}`}>
+                    <span className="text-sm font-medium text-[var(--text-primary)]">
                       {chapterData.bookName} {chapterData.chapter}
-                    </div>
+                    </span>
+                    <span className="text-[11px] font-sans text-[var(--text-subtle)]">
+                      Day {planReadingSession.dayNumber} · Chapter {planReadingSession.currentChapterIndex + 1} of{' '}
+                      {planReadingSession.assignedChapters.length}
+                    </span>
+                  </div>
 
-                    <div className="flex justify-end">
-                      {nextChapterTarget ? (
-                        <button
-                          type="button"
-                          onClick={() => handleNavigateToChapter(nextChapterTarget.bookId, nextChapterTarget.chapter)}
-                          className={`inline-flex items-center gap-1.5 sm:gap-2 py-2 px-2.5 sm:px-3 -mr-2 sm:-mr-3 rounded hover:bg-[var(--text-primary)]/5 text-[var(--text-subtle)] hover:text-[var(--text-primary)] transition-colors cursor-pointer group text-right ${readerFontFamilyClass}`}
-                          title={`Go to ${nextChapterTarget.label}`}
-                          aria-label={`Go to ${nextChapterTarget.label}`}
-                        >
-                          <span className="text-sm sm:text-base font-medium">
-                            {nextChapterTarget.label}
-                          </span>
-                          <svg
-                            className="w-4 h-4 sm:w-5 sm:h-5 shrink-0 transition-transform group-hover:translate-x-0.5"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                          >
-                            <line x1="5" y1="12" x2="19" y2="12" />
-                            <polyline points="12 5 19 12 12 19" />
-                          </svg>
-                        </button>
-                      ) : null}
-                    </div>
-                  </>
-                )}
-              </nav>
+                  {planReadingSession.currentChapterIndex >= planReadingSession.assignedChapters.length - 1 ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleFinishPlanDay()}
+                      className={`inline-flex items-center gap-1.5 py-2 px-4 rounded-full transition-all cursor-pointer font-sans text-xs sm:text-sm font-semibold shadow-sm ${
+                        planReadingSession.isDayFinished
+                          ? 'bg-emerald-600 text-white dark:bg-emerald-500'
+                          : 'bg-[var(--text-primary)] text-[var(--bg-app)] hover:opacity-90 active:scale-95'
+                      }`}
+                      title="Finish day reading"
+                    >
+                      <span>{planReadingSession.isDayFinished ? 'Finished ✓' : 'Finish Reading'}</span>
+                    </button>
+                  ) : (
+                    <span className="text-xs font-sans text-[var(--text-subtle)]">
+                      Chapter {planReadingSession.currentChapterIndex + 1} of {planReadingSession.assignedChapters.length}
+                    </span>
+                  )}
+                </div>
+              )}
 
               {/* NET Attribution Fine Print & About Modal Link */}
               <footer className="mt-12 sm:mt-16 md:mt-20 pt-6 border-t border-[var(--line-subtle)]/60 text-center font-sans">
@@ -1913,15 +2055,125 @@ export const App: React.FC = () => {
 
       {/* Viewport-Anchored Navigation Dock & Action Button on Tablet/Mobile in Notes; Centered otherwise */}
       <div className="fixed bottom-4 sm:bottom-6 inset-x-0 z-50 flex items-center justify-between lg:justify-center pointer-events-none select-none px-4 sm:px-6 md:px-8">
-        {/* Navigation Dock (Smoothly animates between center and left edge on tablet & mobile) */}
-        <nav
-          ref={dockNavRef}
-          aria-label="App navigation"
-          style={{ '--dock-active': activeDockIndex } as React.CSSProperties}
-          className={`relative dock-nav-transition dock-nav-animated pointer-events-auto font-sans h-16 p-1.5 flex items-center gap-[var(--dock-gap)] rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm flex-1 min-w-0 md:flex-none md:shrink-0 ${
+        {/* Navigation Dock Wrapper (Smoothly animates between center and left edge on tablet & mobile) */}
+        <div
+          className={`relative dock-nav-transition dock-nav-animated flex-1 min-w-0 md:flex-none md:shrink-0 ${
             currentView === 'notes' ? 'dock-anchored-left' : 'dock-centered'
           }`}
         >
+          {/* Floating Previous / Next Chapter Circular Buttons: stay visible at any scroll state in Reader view */}
+          {(() => {
+            const canShowChapterArrows = currentView === 'reader' && isChapterReady;
+            const isDockHidden = currentView === 'reader' && !isReaderOmnibarVisible;
+            const prevChapterBtn = planReadingSession
+              ? planReadingSession.currentChapterIndex > 0
+                ? {
+                    onClick: () => handleNavigatePlanChapter('prev'),
+                    title: `Previous: ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1]?.bookName} ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1]?.chapter}`,
+                    ariaLabel: `Previous chapter (${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1]?.bookName} ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1]?.chapter})`,
+                  }
+                : null
+              : prevChapterTarget
+              ? {
+                  onClick: () => handleNavigateToChapter(prevChapterTarget.bookId, prevChapterTarget.chapter),
+                  title: `Previous: ${prevChapterTarget.label}`,
+                  ariaLabel: `Previous chapter (${prevChapterTarget.label})`,
+                }
+              : null;
+
+            const nextChapterBtn = planReadingSession
+              ? planReadingSession.currentChapterIndex < planReadingSession.assignedChapters.length - 1
+                ? {
+                    onClick: () => handleNavigatePlanChapter('next'),
+                    title: `Next: ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1]?.bookName} ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1]?.chapter}`,
+                    ariaLabel: `Next chapter (${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1]?.bookName} ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1]?.chapter})`,
+                  }
+                : null
+              : nextChapterTarget
+              ? {
+                  onClick: () => handleNavigateToChapter(nextChapterTarget.bookId, nextChapterTarget.chapter),
+                  title: `Next: ${nextChapterTarget.label}`,
+                  ariaLabel: `Next chapter (${nextChapterTarget.label})`,
+                }
+              : null;
+
+            return (
+              <div
+                className={`reader-chapter-arrows absolute bottom-full left-0 right-0 mb-2.5 sm:mb-3 flex items-center justify-between pointer-events-none ${
+                  isDockHidden ? 'is-dock-hidden' : ''
+                } ${canShowChapterArrows ? 'opacity-100' : 'opacity-0'}`}
+                aria-hidden={!canShowChapterArrows}
+              >
+                <div>
+                  {prevChapterBtn && (
+                    <button
+                      type="button"
+                      tabIndex={canShowChapterArrows ? 0 : -1}
+                      onClick={prevChapterBtn.onClick}
+                      title={prevChapterBtn.title}
+                      aria-label={prevChapterBtn.ariaLabel}
+                      className={`${
+                        canShowChapterArrows ? 'pointer-events-auto' : 'pointer-events-none'
+                      } w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm flex items-center justify-center text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)] hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer group`}
+                    >
+                      <svg
+                        className="w-5 h-5 transition-transform group-hover:-translate-x-0.5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <line x1="19" y1="12" x2="5" y2="12" />
+                        <polyline points="12 19 5 12 12 5" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+
+                <div>
+                  {nextChapterBtn && (
+                    <button
+                      type="button"
+                      tabIndex={canShowChapterArrows ? 0 : -1}
+                      onClick={nextChapterBtn.onClick}
+                      title={nextChapterBtn.title}
+                      aria-label={nextChapterBtn.ariaLabel}
+                      className={`${
+                        canShowChapterArrows ? 'pointer-events-auto' : 'pointer-events-none'
+                      } w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm flex items-center justify-center text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)] hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer group`}
+                    >
+                      <svg
+                        className="w-5 h-5 transition-transform group-hover:translate-x-0.5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                        <polyline points="12 5 19 12 12 19" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          <nav
+            ref={dockNavRef}
+            aria-label="App navigation"
+            aria-hidden={currentView === 'reader' && !isReaderOmnibarVisible}
+            style={{ '--dock-active': activeDockIndex } as React.CSSProperties}
+            className={`relative w-full pointer-events-auto font-sans h-16 p-1.5 flex items-center gap-[var(--dock-gap)] rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm dock-bottom-chrome ${
+              currentView === 'reader' && !isReaderOmnibarVisible ? 'is-dock-hidden' : ''
+            }`}
+          >
           {/* Active Background Indicator Track (CSS locks slot width/offset during resizes; FLIP handles tab glide) */}
           <div className="absolute inset-1.5 pointer-events-none" aria-hidden="true">
             <div
@@ -1933,7 +2185,7 @@ export const App: React.FC = () => {
           <button
             ref={readerBtnRef}
             type="button"
-            onClick={() => setCurrentView('reader')}
+            onClick={() => handleSelectTab('reader')}
             className={`relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'reader'
                 ? 'text-[var(--bg-app)]'
@@ -1962,9 +2214,40 @@ export const App: React.FC = () => {
           </button>
 
           <button
+            ref={notesBtnRef}
+            type="button"
+            onClick={() => handleSelectTab('notes')}
+            className={`relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+              currentView === 'notes'
+                ? 'text-[var(--bg-app)]'
+                : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'
+            }`}
+            title="Notes"
+            aria-label="Notes"
+            aria-current={currentView === 'notes' ? 'page' : undefined}
+          >
+            <svg
+              className="w-5 h-5 sm:w-5 sm:h-5 shrink-0"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+            </svg>
+            <span className="font-sans text-[9px] sm:text-[9.5px] font-medium leading-none tracking-normal">
+              Notes
+            </span>
+          </button>
+
+          <button
             ref={plansBtnRef}
             type="button"
-            onClick={() => setCurrentView('plans')}
+            onClick={() => handleSelectTab('plans')}
             className={`relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'plans'
                 ? 'text-[var(--bg-app)]'
@@ -1996,40 +2279,9 @@ export const App: React.FC = () => {
           </button>
 
           <button
-            ref={notesBtnRef}
-            type="button"
-            onClick={() => setCurrentView('notes')}
-            className={`relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
-              currentView === 'notes'
-                ? 'text-[var(--bg-app)]'
-                : 'text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/5'
-            }`}
-            title="Notes"
-            aria-label="Notes"
-            aria-current={currentView === 'notes' ? 'page' : undefined}
-          >
-            <svg
-              className="w-5 h-5 sm:w-5 sm:h-5 shrink-0"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M12 20h9" />
-              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-            </svg>
-            <span className="font-sans text-[9px] sm:text-[9.5px] font-medium leading-none tracking-normal">
-              Notes
-            </span>
-          </button>
-
-          <button
             ref={settingsBtnRef}
             type="button"
-            onClick={() => setCurrentView('settings')}
+            onClick={() => handleSelectTab('settings')}
             className={`relative z-10 min-w-0 flex-1 md:flex-none md:w-[72px] h-[50px] px-1 md:px-3.5 rounded-full font-sans inline-flex flex-col items-center justify-center gap-0.5 transition-colors duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
               currentView === 'settings'
                 ? 'text-[var(--bg-app)]'
@@ -2056,7 +2308,8 @@ export const App: React.FC = () => {
               Settings
             </span>
           </button>
-        </nav>
+          </nav>
+        </div>
 
         {/* Animated Add Note Button (Anchored to right on tablet & mobile, attached to dock on desktop) */}
         <div

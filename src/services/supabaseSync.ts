@@ -1,7 +1,12 @@
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import type { CommentaryNote } from '../types/bible';
+import type { ReadingPlan } from '../types/readingPlan';
 import { db } from './db';
-import { checkSimulateLoggedOut, setSimulateLoggedOut } from '../utils/devSimulation';
+import {
+  checkSimulateLoggedOut,
+  isDummyDataEnabled,
+  setSimulateLoggedOut,
+} from '../utils/devSimulation';
 
 const STORAGE_KEY_SUPABASE_URL = 'scripturepage_supabase_url';
 const STORAGE_KEY_SUPABASE_ANON_KEY = 'scripturepage_supabase_anon_key';
@@ -469,11 +474,137 @@ async function upsertNoteRowsResilient(client: SupabaseClient, rows: Record<stri
   return { error };
 }
 
+const ACTIVE_PLAN_SETTING_KEY = 'active_reading_plan_id';
+const PLAN_TOMBSTONES_SETTING_KEY = 'reading_plan_tombstones';
+const PLAN_STATE_FALLBACK_CLOUD_KEY = 'reading_plans_state';
+const PLAN_TOMBSTONE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+function readingPlanToRow(plan: ReadingPlan, userId?: string | null) {
+  const row: Record<string, any> = {
+    id: plan.id,
+    title: plan.title ?? '',
+    description: plan.description ?? '',
+    is_preset: Boolean(plan.isPreset),
+    preset_key: plan.presetKey ?? null,
+    scope: plan.scope,
+    duration_days: Number(plan.durationDays) || 365,
+    days_per_week: Number(plan.daysPerWeek) || 7,
+    track_style: plan.trackStyle,
+    custom_book_ids: Array.isArray(plan.customBookIds) ? plan.customBookIds : null,
+    start_date: Number(plan.startDate) || Date.now(),
+    created_at: Number(plan.createdAt) || Date.now(),
+    updated_at: Number(plan.updatedAt) || Date.now(),
+    is_active: Boolean(plan.isActive),
+    completed_days: Array.isArray(plan.completedDays) ? plan.completedDays : [],
+    completed_portions:
+      plan.completedPortions && typeof plan.completedPortions === 'object'
+        ? plan.completedPortions
+        : {},
+    deleted_at: null,
+  };
+  if (userId) {
+    row.user_id = userId;
+  }
+  return row;
+}
+
+function rowToReadingPlan(row: any): ReadingPlan {
+  return {
+    id: String(row.id),
+    title: row.title || 'Reading Plan',
+    description: row.description || '',
+    isPreset: Boolean(row.is_preset ?? row.isPreset),
+    presetKey: (row.preset_key ?? row.presetKey) || undefined,
+    scope: row.scope,
+    durationDays: Number(row.duration_days ?? row.durationDays) || 365,
+    daysPerWeek: (Number(row.days_per_week ?? row.daysPerWeek) || 7) as ReadingPlan['daysPerWeek'],
+    trackStyle: row.track_style ?? row.trackStyle ?? 'canonical',
+    customBookIds: Array.isArray(row.custom_book_ids ?? row.customBookIds)
+      ? (row.custom_book_ids ?? row.customBookIds)
+      : undefined,
+    startDate: Number(row.start_date ?? row.startDate) || Date.now(),
+    createdAt: Number(row.created_at ?? row.createdAt) || Date.now(),
+    updatedAt: Number(row.updated_at ?? row.updatedAt) || Date.now(),
+    isActive: Boolean(row.is_active ?? row.isActive),
+    completedDays: Array.isArray(row.completed_days ?? row.completedDays)
+      ? (row.completed_days ?? row.completedDays)
+      : [],
+    completedPortions:
+      (row.completed_portions ?? row.completedPortions) &&
+      typeof (row.completed_portions ?? row.completedPortions) === 'object'
+        ? (row.completed_portions ?? row.completedPortions)
+        : {},
+  };
+}
+
+function isMissingReadingPlansTableError(error: any): boolean {
+  if (!error) return false;
+  const code = String(error.code || '');
+  const msg = String(error.message || '').toLowerCase();
+  return (
+    code === '42P01' ||
+    code === 'PGRST205' ||
+    msg.includes('reading_plans') && (msg.includes('does not exist') || msg.includes('could not find'))
+  );
+}
+
+function pruneTombstones(raw: Record<string, number>, now: number): Record<string, number> {
+  const cleaned: Record<string, number> = {};
+  for (const [id, ts] of Object.entries(raw || {})) {
+    const num = Number(ts);
+    if (id && !id.startsWith('seed-') && Number.isFinite(num) && num > 0 && now - num < PLAN_TOMBSTONE_RETENTION_MS) {
+      cleaned[id] = num;
+    }
+  }
+  return cleaned;
+}
+
+export async function getLocalPlanTombstones(): Promise<Record<string, number>> {
+  try {
+    const entry = await db.settings.get(PLAN_TOMBSTONES_SETTING_KEY);
+    if (entry && entry.value && typeof entry.value === 'object') {
+      return pruneTombstones(entry.value, Date.now());
+    }
+  } catch {}
+  return {};
+}
+
+export async function recordLocalPlanTombstone(planId: string, deletedAt = Date.now()): Promise<Record<string, number>> {
+  const current = await getLocalPlanTombstones();
+  if (!planId.startsWith('seed-')) {
+    current[planId] = Math.max(current[planId] || 0, deletedAt);
+    await db.settings.put({
+      id: PLAN_TOMBSTONES_SETTING_KEY,
+      value: current,
+      updatedAt: deletedAt,
+    } as any);
+  }
+  return current;
+}
+
+async function saveReadingPlansStateFallback(client: SupabaseClient, userId: string): Promise<void> {
+  const allLocalPlans = (await db.readingPlans.toArray()).filter((p) => !p.id.startsWith('seed-'));
+  const tombstones = await getLocalPlanTombstones();
+  const now = Date.now();
+  await client.from('user_settings').upsert(
+    {
+      key: PLAN_STATE_FALLBACK_CLOUD_KEY,
+      user_id: userId,
+      value: { plans: allLocalPlans, tombstones },
+      updated_at: now,
+    },
+    { onConflict: 'key,user_id' }
+  );
+}
+
 // Memory buffers for debouncing background cloud writes
 const pendingNotesMap = new Map<string, CommentaryNote>();
 const pendingNoteTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pendingSettingsMap = new Map<string, any>();
 const pendingSettingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingPlansMap = new Map<string, ReadingPlan>();
+const pendingPlanTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingPlanDeletesMap = new Map<string, number>();
 
 /**
  * Resolves current active user ID from cached session first, avoiding remote auth round-trips.
@@ -491,7 +622,7 @@ async function getActiveUserId(client: SupabaseClient): Promise<string | undefin
 }
 
 /**
- * Flushes all queued background note and settings writes immediately.
+ * Flushes all queued background note, plan, and settings writes immediately.
  */
 export async function flushPendingCloudSync(): Promise<void> {
   const client = getSupabaseClient();
@@ -502,17 +633,32 @@ export async function flushPendingCloudSync(): Promise<void> {
   pendingNoteTimers.forEach((timer) => clearTimeout(timer));
   pendingNoteTimers.clear();
 
+  const plansToFlush = Array.from(pendingPlansMap.values());
+  pendingPlansMap.clear();
+  pendingPlanTimers.forEach((timer) => clearTimeout(timer));
+  pendingPlanTimers.clear();
+
+  const planDeletesToFlush = Array.from(pendingPlanDeletesMap.entries());
+  pendingPlanDeletesMap.clear();
+
   const settingsToFlush = Array.from(pendingSettingsMap.entries());
   pendingSettingsMap.clear();
   pendingSettingTimers.forEach((timer) => clearTimeout(timer));
   pendingSettingTimers.clear();
 
-  if (notesToFlush.length === 0 && settingsToFlush.length === 0) return;
+  if (
+    notesToFlush.length === 0 &&
+    plansToFlush.length === 0 &&
+    planDeletesToFlush.length === 0 &&
+    settingsToFlush.length === 0
+  ) {
+    return;
+  }
 
   try {
     const userId = await getActiveUserId(client);
     if (!userId) {
-      // Guest reflections remain securely local in IndexedDB until an account is signed in
+      // Guest reflections & plans remain securely local in IndexedDB until an account is signed in
       return;
     }
 
@@ -520,6 +666,44 @@ export async function flushPendingCloudSync(): Promise<void> {
     if (syncableNotes.length > 0) {
       const rows = syncableNotes.map((n) => noteToRow(n, userId));
       await upsertNoteRowsResilient(client, rows);
+    }
+
+    const syncablePlans = plansToFlush.filter((p) => !p.id.startsWith('seed-'));
+    let needsFallbackPlanState = false;
+    if (syncablePlans.length > 0) {
+      const planRows = syncablePlans.map((p) => readingPlanToRow(p, userId));
+      const { error: planPushErr } = await client.from('reading_plans').upsert(planRows, { onConflict: 'id' });
+      if (isMissingReadingPlansTableError(planPushErr)) {
+        needsFallbackPlanState = true;
+      }
+    }
+
+    if (planDeletesToFlush.length > 0) {
+      const deleteIds = planDeletesToFlush.map(([id]) => id).filter((id) => !id.startsWith('seed-'));
+      if (deleteIds.length > 0) {
+        const { error: delErr } = await client
+          .from('reading_plans')
+          .delete()
+          .eq('user_id', userId)
+          .in('id', deleteIds);
+        if (isMissingReadingPlansTableError(delErr)) {
+          needsFallbackPlanState = true;
+        }
+      }
+      const tombstones = await getLocalPlanTombstones();
+      await client.from('user_settings').upsert(
+        {
+          key: PLAN_TOMBSTONES_SETTING_KEY,
+          user_id: userId,
+          value: tombstones,
+          updated_at: Date.now(),
+        },
+        { onConflict: 'key,user_id' }
+      );
+    }
+
+    if (needsFallbackPlanState) {
+      await saveReadingPlansStateFallback(client, userId);
     }
 
     if (settingsToFlush.length > 0) {
@@ -601,9 +785,101 @@ export async function deleteNoteFromCloud(id: string): Promise<void> {
   const client = getSupabaseClient();
   if (!client) return;
   try {
-    await client.from('notes').delete().eq('id', id);
+    const userId = await getActiveUserId(client);
+    if (!userId) return;
+    await client.from('notes').delete().eq('id', id).eq('user_id', userId);
   } catch (err) {
     console.debug('Background Supabase note delete skipped:', err);
+  }
+}
+
+/**
+ * Debounced reading plan upsert to Supabase (800ms delay).
+ * Skips demo (`seed-*`) plans and unauthenticated guests.
+ */
+export async function pushReadingPlanToCloud(plan: ReadingPlan): Promise<void> {
+  if (plan.id.startsWith('seed-')) return;
+  pendingPlanDeletesMap.delete(plan.id);
+
+  const client = getSupabaseClient();
+  if (!client) return;
+
+  pendingPlansMap.set(plan.id, plan);
+
+  const existingTimer = pendingPlanTimers.get(plan.id);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const timer = setTimeout(async () => {
+    pendingPlanTimers.delete(plan.id);
+    const queuedPlan = pendingPlansMap.get(plan.id);
+    if (!queuedPlan) return;
+    pendingPlansMap.delete(plan.id);
+
+    try {
+      const userId = await getActiveUserId(client);
+      if (!userId) return;
+
+      const row = readingPlanToRow(queuedPlan, userId);
+      const { error } = await client.from('reading_plans').upsert([row], { onConflict: 'id' });
+      if (isMissingReadingPlansTableError(error)) {
+        await saveReadingPlansStateFallback(client, userId);
+      }
+    } catch (err) {
+      console.debug('Background Supabase reading plan sync skipped:', err);
+    }
+  }, 800);
+
+  pendingPlanTimers.set(plan.id, timer);
+}
+
+/**
+ * Deletes a reading plan from Supabase and propagates its deletion tombstone.
+ */
+export async function deleteReadingPlanFromCloud(planId: string, deletedAt = Date.now()): Promise<void> {
+  const existingTimer = pendingPlanTimers.get(planId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    pendingPlanTimers.delete(planId);
+  }
+  pendingPlansMap.delete(planId);
+
+  if (planId.startsWith('seed-')) return;
+
+  const client = getSupabaseClient();
+  if (!client) return;
+
+  pendingPlanDeletesMap.set(planId, deletedAt);
+
+  try {
+    const userId = await getActiveUserId(client);
+    if (!userId) return;
+
+    pendingPlanDeletesMap.delete(planId);
+
+    const { error: delErr } = await client
+      .from('reading_plans')
+      .delete()
+      .eq('id', planId)
+      .eq('user_id', userId);
+
+    const tombstones = await getLocalPlanTombstones();
+    await client.from('user_settings').upsert(
+      {
+        key: PLAN_TOMBSTONES_SETTING_KEY,
+        user_id: userId,
+        value: tombstones,
+        updated_at: deletedAt,
+      },
+      { onConflict: 'key,user_id' }
+    );
+
+    if (isMissingReadingPlansTableError(delErr)) {
+      await saveReadingPlansStateFallback(client, userId);
+    }
+  } catch (err) {
+    console.debug('Background Supabase reading plan delete skipped:', err);
   }
 }
 
@@ -716,10 +992,18 @@ export async function syncAllWithCloud(): Promise<SyncResult> {
     // 1. Fetch all local notes from Dexie, excluding demo/seed notes (offload dummy data)
     const allLocalNotes = await db.notes.toArray();
     const dummyNoteIds = allLocalNotes.filter((n) => n.id.startsWith('seed-')).map((n) => n.id);
-    if (dummyNoteIds.length > 0 && import.meta.env.VITE_ENABLE_DUMMY_DATA !== 'true') {
+    if (dummyNoteIds.length > 0 && !isDummyDataEnabled()) {
       await db.notes.bulkDelete(dummyNoteIds);
     }
     const localNotes = allLocalNotes.filter((n) => !n.id.startsWith('seed-'));
+
+    // Also exclude/clean demo seed-* reading plans
+    const allLocalPlansRaw = await db.readingPlans.toArray();
+    const dummyPlanIds = allLocalPlansRaw.filter((p) => p.id.startsWith('seed-')).map((p) => p.id);
+    if (dummyPlanIds.length > 0 && !isDummyDataEnabled()) {
+      await db.readingPlans.bulkDelete(dummyPlanIds);
+    }
+    const localPlans = allLocalPlansRaw.filter((p) => !p.id.startsWith('seed-'));
 
     // 2. Push real local notes to Supabase in batches of 50
     let notesPushed = 0;
@@ -761,8 +1045,9 @@ export async function syncAllWithCloud(): Promise<SyncResult> {
       }
     }
 
-    // 4. Bidirectional Sync of User Settings & Trajectory Store
+    // 4. Bidirectional Sync of User Settings, Active Plan Pointer & Reading Plans
     if (userId) {
+      let cloudSettingsMap = new Map<string, any>();
       try {
         const { data: remoteSettings, error: settingsPullErr } = await client
           .from('user_settings')
@@ -770,54 +1055,224 @@ export async function syncAllWithCloud(): Promise<SyncResult> {
           .eq('user_id', userId);
 
         if (!settingsPullErr && remoteSettings) {
-          const cloudMap = new Map(remoteSettings.map((s: any) => [s.key, s]));
+          cloudSettingsMap = new Map(remoteSettings.map((s: any) => [s.key, s]));
 
           const settingKeys: Array<{ cloudKey: string; dexieKey: string }> = [
             { cloudKey: 'user_profile', dexieKey: 'user_abridged_profile' },
             { cloudKey: 'appearance_settings', dexieKey: 'appearance_settings' },
             { cloudKey: 'reading_pos', dexieKey: 'reading_pos' },
+            { cloudKey: ACTIVE_PLAN_SETTING_KEY, dexieKey: ACTIVE_PLAN_SETTING_KEY },
           ];
 
           for (const { cloudKey, dexieKey } of settingKeys) {
             const localEntry = await db.settings.get(dexieKey);
-            const cloudEntry = cloudMap.get(cloudKey);
+            const cloudEntry = cloudSettingsMap.get(cloudKey);
 
-            if (cloudEntry && cloudEntry.value !== undefined && cloudEntry.value !== null) {
+            if (cloudEntry && cloudEntry.value !== undefined) {
               const cloudTimestamp = Number(cloudEntry.updated_at) || 0;
               const localTimestamp = Number((localEntry as any)?.updatedAt) || 0;
 
-              // If cloud is newer or local is empty, update local Dexie
-              if (!localEntry || !localEntry.value || cloudTimestamp > localTimestamp) {
+              if (!localEntry || cloudTimestamp > localTimestamp) {
                 await db.settings.put({
                   id: dexieKey,
                   value: cloudEntry.value,
                   updatedAt: cloudTimestamp || now,
                 } as any);
-              } else if (localEntry && localEntry.value && localTimestamp > cloudTimestamp) {
-                // If local is strictly newer, update cloud
-                const payload = {
+              } else if (localEntry && localTimestamp > cloudTimestamp) {
+                await client.from('user_settings').upsert(
+                  {
+                    key: cloudKey,
+                    user_id: userId,
+                    value: localEntry.value,
+                    updated_at: localTimestamp || now,
+                  },
+                  { onConflict: 'key,user_id' }
+                );
+              }
+            } else if (localEntry && localEntry.value !== undefined) {
+              const localTimestamp = Number((localEntry as any)?.updatedAt) || now;
+              await client.from('user_settings').upsert(
+                {
                   key: cloudKey,
                   user_id: userId,
                   value: localEntry.value,
-                  updated_at: localTimestamp || now,
-                };
-                await client.from('user_settings').upsert(payload, { onConflict: 'key,user_id' });
-              }
-            } else if (localEntry && localEntry.value) {
-              // Local exists but no cloud entry exists yet -> create initial entry in Supabase!
-              const localTimestamp = Number((localEntry as any)?.updatedAt) || now;
-              const payload = {
-                key: cloudKey,
-                user_id: userId,
-                value: localEntry.value,
-                updated_at: localTimestamp,
-              };
-              await client.from('user_settings').upsert(payload, { onConflict: 'key,user_id' });
+                  updated_at: localTimestamp,
+                },
+                { onConflict: 'key,user_id' }
+              );
             }
           }
         }
       } catch (settingsSyncErr) {
         console.debug('Background user_settings sync non-fatal:', settingsSyncErr);
+      }
+
+      // 4b. Bidirectional Reading Plans Sync (dedicated table with user_settings fallback)
+      try {
+        const localTombstones = await getLocalPlanTombstones();
+        const cloudTombstoneRaw = cloudSettingsMap.get(PLAN_TOMBSTONES_SETTING_KEY)?.value;
+        const fallbackState = cloudSettingsMap.get(PLAN_STATE_FALLBACK_CLOUD_KEY)?.value;
+        const fallbackTombstones =
+          fallbackState?.tombstones && typeof fallbackState.tombstones === 'object'
+            ? fallbackState.tombstones
+            : {};
+
+        const mergedTombstones = pruneTombstones(
+          {
+            ...localTombstones,
+            ...(cloudTombstoneRaw && typeof cloudTombstoneRaw === 'object' ? cloudTombstoneRaw : {}),
+            ...fallbackTombstones,
+          },
+          now
+        );
+        for (const [id, ts] of Object.entries(localTombstones)) {
+          if (mergedTombstones[id] !== undefined) {
+            mergedTombstones[id] = Math.max(mergedTombstones[id], ts);
+          }
+        }
+
+        const { data: remotePlanRows, error: plansPullErr } = await client
+          .from('reading_plans')
+          .select('*')
+          .eq('user_id', userId);
+
+        const useFallbackTable = isMissingReadingPlansTableError(plansPullErr);
+        const remotePlansList: ReadingPlan[] = [];
+
+        if (!useFallbackTable && !plansPullErr && Array.isArray(remotePlanRows)) {
+          for (const row of remotePlanRows) {
+            if (row.deleted_at != null) {
+              mergedTombstones[row.id] = Math.max(mergedTombstones[row.id] || 0, Number(row.deleted_at) || 0);
+            } else {
+              remotePlansList.push(rowToReadingPlan(row));
+            }
+          }
+        }
+
+        // Also fold in any plans stored in the user_settings fallback snapshot (migration/fallback)
+        if (Array.isArray(fallbackState?.plans)) {
+          for (const fp of fallbackState.plans) {
+            const normalized = rowToReadingPlan(fp);
+            const existingIdx = remotePlansList.findIndex((rp) => rp.id === normalized.id);
+            if (existingIdx === -1) {
+              remotePlansList.push(normalized);
+            } else if ((normalized.updatedAt || 0) > (remotePlansList[existingIdx].updatedAt || 0)) {
+              remotePlansList[existingIdx] = normalized;
+            }
+          }
+        }
+
+        const localPlanMap = new Map(localPlans.map((p) => [p.id, p]));
+        const remotePlanMap = new Map(remotePlansList.map((p) => [p.id, p]));
+
+        // Apply deletion tombstones locally and remotely
+        const remoteDeleteIds: string[] = [];
+        let plansChanged = false;
+        for (const [planId, deletedAt] of Object.entries(mergedTombstones)) {
+          const lp = localPlanMap.get(planId);
+          if (lp && deletedAt >= (lp.updatedAt || 0)) {
+            await db.readingPlans.delete(planId);
+            localPlanMap.delete(planId);
+            plansChanged = true;
+          }
+          const rp = remotePlanMap.get(planId);
+          if (rp && deletedAt >= (rp.updatedAt || 0)) {
+            remoteDeleteIds.push(planId);
+            remotePlanMap.delete(planId);
+          }
+        }
+
+        // Pull newer or missing remote plans into local Dexie
+        for (const remotePlan of remotePlanMap.values()) {
+          const localPlan = localPlanMap.get(remotePlan.id);
+          if (!localPlan || (remotePlan.updatedAt || 0) > (localPlan.updatedAt || 0)) {
+            await db.readingPlans.put(remotePlan);
+            localPlanMap.set(remotePlan.id, remotePlan);
+            plansChanged = true;
+          }
+        }
+
+        // Push newer or missing local plans to cloud
+        const plansToPush: ReadingPlan[] = [];
+        for (const localPlan of localPlanMap.values()) {
+          const remotePlan = remotePlanMap.get(localPlan.id);
+          if (!remotePlan || (localPlan.updatedAt || 0) > (remotePlan.updatedAt || 0)) {
+            plansToPush.push(localPlan);
+          }
+        }
+
+        await db.settings.put({
+          id: PLAN_TOMBSTONES_SETTING_KEY,
+          value: mergedTombstones,
+          updatedAt: now,
+        } as any);
+
+        if (useFallbackTable) {
+          await saveReadingPlansStateFallback(client, userId);
+        } else {
+          if (remoteDeleteIds.length > 0) {
+            await client
+              .from('reading_plans')
+              .delete()
+              .eq('user_id', userId)
+              .in('id', remoteDeleteIds);
+          }
+          if (plansToPush.length > 0) {
+            await client
+              .from('reading_plans')
+              .upsert(plansToPush.map((p) => readingPlanToRow(p, userId)), { onConflict: 'id' });
+          }
+        }
+
+        await client.from('user_settings').upsert(
+          {
+            key: PLAN_TOMBSTONES_SETTING_KEY,
+            user_id: userId,
+            value: mergedTombstones,
+            updated_at: now,
+          },
+          { onConflict: 'key,user_id' }
+        );
+
+        // Reconcile active_reading_plan_id with merged plans
+        const mergedPlans = Array.from(localPlanMap.values());
+        const activeSetting = await db.settings.get(ACTIVE_PLAN_SETTING_KEY);
+        const targetActiveId =
+          typeof activeSetting?.value === 'string' && localPlanMap.has(activeSetting.value)
+            ? activeSetting.value
+            : mergedPlans.find((p) => p.isActive)?.id || mergedPlans[0]?.id || null;
+
+        for (const p of mergedPlans) {
+          const shouldBeActive = p.id === targetActiveId;
+          if (p.isActive !== shouldBeActive) {
+            await db.readingPlans.put({ ...p, isActive: shouldBeActive });
+            plansChanged = true;
+          }
+        }
+
+        if ((activeSetting?.value ?? null) !== targetActiveId) {
+          await db.settings.put({
+            id: ACTIVE_PLAN_SETTING_KEY,
+            value: targetActiveId,
+            updatedAt: now,
+          } as any);
+          await client.from('user_settings').upsert(
+            {
+              key: ACTIVE_PLAN_SETTING_KEY,
+              user_id: userId,
+              value: targetActiveId,
+              updated_at: now,
+            },
+            { onConflict: 'key,user_id' }
+          );
+          plansChanged = true;
+        }
+
+        if (plansChanged && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('reneu:plans-synced'));
+        }
+      } catch (plansSyncErr) {
+        console.debug('Background reading_plans sync non-fatal:', plansSyncErr);
       }
     }
 

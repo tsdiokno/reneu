@@ -247,6 +247,17 @@ export function checkIsDevMode(): boolean {
   return import.meta.env.DEV !== false;
 }
 
+/**
+ * Determines whether demo/dummy sample data (notes & demo reading plan) should be seeded.
+ * Disabled automatically in production unless explicitly enabled via VITE_ENABLE_DUMMY_DATA="true".
+ */
+export function isDummyDataEnabled(): boolean {
+  const envFlag = import.meta.env.VITE_ENABLE_DUMMY_DATA as string | undefined;
+  if (envFlag === 'false') return false;
+  if (envFlag === 'true') return true;
+  return checkIsDevMode();
+}
+
 export function setIsDevMode(enable: boolean): void {
   if (typeof window === 'undefined') return;
   try {

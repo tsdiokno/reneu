@@ -6,7 +6,8 @@ import {
   pushSettingToCloud,
   fetchRemoteSetting,
 } from './supabaseSync';
-import { checkIsDevMode } from '../utils/devSimulation';
+import { checkIsDevMode, isDummyDataEnabled } from '../utils/devSimulation';
+export { isDummyDataEnabled };
 
 export {
   syncAllWithCloud,
@@ -36,6 +37,7 @@ const SETTING_KEYS = {
   NEW_NOTE_MADE_FOR_SYNTHESIS: 'new_note_made_for_synthesis',
   EXPOSED_NOTES: 'exposed_notes_set',
   INITIAL_SEEDED: 'notes_initial_seeded',
+  PLANS_INITIAL_SEEDED: 'plans_initial_seeded',
 };
 
 const LOCAL_STORAGE_EXPOSED_NOTES = 'scripture_exposed_notes';
@@ -78,18 +80,7 @@ export async function saveReadingPosition(pos: ReadingPosition): Promise<void> {
 let notesInitPromise: Promise<void> | null = null;
 
 /**
- * Determines whether demo/dummy commentary notes should be seeded.
- * Disabled automatically in production unless explicitly enabled via VITE_ENABLE_DUMMY_DATA="true".
- */
-export function isDummyDataEnabled(): boolean {
-  const envFlag = import.meta.env.VITE_ENABLE_DUMMY_DATA as string | undefined;
-  if (envFlag === 'false') return false;
-  if (envFlag === 'true') return true;
-  return checkIsDevMode();
-}
-
-/**
- * Removes seeded dummy notes (`seed-*`) from local IndexedDB storage.
+ * Removes seeded dummy notes and demo reading plans (`seed-*`) from local IndexedDB storage.
  * Useful when transitioning from local demo mode to a clean production account.
  */
 export async function offloadDummyData(): Promise<number> {
@@ -99,13 +90,23 @@ export async function offloadDummyData(): Promise<number> {
     if (dummyIds.length > 0) {
       await db.notes.bulkDelete(dummyIds);
     }
+
+    const allPlans = await db.readingPlans.toArray();
+    const dummyPlanIds = allPlans.filter((p) => p.id.startsWith('seed-')).map((p) => p.id);
+    if (dummyPlanIds.length > 0) {
+      await db.readingPlans.bulkDelete(dummyPlanIds);
+    }
+
     await db.settings.put({ id: SETTING_KEYS.INITIAL_SEEDED, value: true });
-    return dummyIds.length;
+    await db.settings.put({ id: SETTING_KEY_PLANS_SEEDED_REF, value: true });
+    return dummyIds.length + dummyPlanIds.length;
   } catch (err) {
     console.warn('Error offloading dummy data:', err);
     return 0;
   }
 }
+
+const SETTING_KEY_PLANS_SEEDED_REF = SETTING_KEYS.PLANS_INITIAL_SEEDED;
 
 /**
  * Guarantees that commentary notes are initialized early on first launch,

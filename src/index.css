@@ -474,6 +474,147 @@ a:focus-visible,
   }
 }
 
+/* Auto-hiding Sticky Slide-Down Omnibar Chrome (Reader & Notes) */
+.omnibar-sticky-chrome {
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  will-change: transform;
+  transition: transform 300ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.omnibar-sticky-chrome.is-omnibar-hidden {
+  transform: translate3d(0, -100%, 0);
+}
+
+.omnibar-sticky-chrome.has-plan-bar.is-omnibar-hidden {
+  transform: translate3d(0, calc(-1 * var(--omni-h, 72px)), 0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .omnibar-sticky-chrome {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Reader Shrinking Sticky Omnibar Chrome */
+.reader-omnibar-shell {
+  min-height: var(--reader-chrome-full-h, auto);
+}
+
+.reader-omnibar-header {
+  position: relative;
+  height: var(--reader-omni-full-h, auto);
+  overflow: hidden;
+  will-change: height;
+  transition: height 320ms cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 220ms ease,
+              box-shadow 220ms ease,
+              background-color 220ms ease;
+}
+
+.reader-omnibar-header.is-expanded.has-suggestions {
+  overflow: visible;
+}
+
+.reader-omnibar-header.is-compact {
+  height: 2.5rem;
+}
+
+@media (min-width: 640px) {
+  .reader-omnibar-header.is-compact {
+    height: 2.75rem;
+  }
+}
+
+.reader-omnibar-full-layer {
+  transform: translate3d(0, 0, 0) scale(1);
+  transform-origin: center top;
+  will-change: transform, opacity;
+  transition: opacity 220ms cubic-bezier(0.16, 1, 0.3, 1),
+              transform 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.reader-omnibar-header.is-compact .reader-omnibar-full-layer {
+  opacity: 0;
+  transform: translate3d(0, -10px, 0) scale(0.985);
+}
+
+.reader-omnibar-compact-layer {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 1rem;
+  transform: translate3d(0, 8px, 0) scale(0.96);
+  will-change: transform, opacity;
+  transition: opacity 220ms cubic-bezier(0.16, 1, 0.3, 1),
+              transform 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.reader-omnibar-header.is-compact .reader-omnibar-compact-layer {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+}
+
+@media (min-width: 640px) {
+  .reader-omnibar-compact-layer {
+    height: 2.75rem;
+    padding-inline: 2rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reader-omnibar-header,
+  .reader-omnibar-full-layer,
+  .reader-omnibar-compact-layer {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Auto-hiding Bottom Navigation Dock Chrome (Reader View) */
+.dock-bottom-chrome {
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  will-change: transform;
+  transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dock-bottom-chrome.is-dock-hidden {
+  transform: translate3d(0, calc(100% + 2.5rem + env(safe-area-inset-bottom, 0px)), 0);
+}
+
+.dock-bottom-chrome.is-dock-hidden * {
+  pointer-events: none !important;
+}
+
+/* Persistent Floating Reader Chapter Arrows: sit on top of dock ends, glide to bottom edge when dock hides */
+.reader-chapter-arrows {
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  will-change: transform, opacity;
+  transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.reader-chapter-arrows.is-dock-hidden {
+  transform: translate3d(0, 4.625rem, 0);
+}
+
+@media (min-width: 640px) {
+  .reader-chapter-arrows.is-dock-hidden {
+    transform: translate3d(0, 4.75rem, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dock-bottom-chrome,
+  .reader-chapter-arrows {
+    transition-duration: 0.01ms !important;
+  }
+}
+
 /* Splash screen scrollbar suppression */
 #pwa-splash {
   overflow: hidden !important;
