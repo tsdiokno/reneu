@@ -38,23 +38,23 @@
               theme = JSON.parse(appStr).theme;
             }
           }
-          if (theme === 'black' || theme === 'white' || theme === 'parchment') {
-            document.documentElement.setAttribute('data-theme', theme);
-            if (theme === 'black') {
-              document.documentElement.classList.add('dark');
-              document.documentElement.style.colorScheme = 'dark';
-            } else {
-              document.documentElement.classList.remove('dark');
-              document.documentElement.style.colorScheme = 'light';
-            }
-            var meta = document.querySelector('meta[name="theme-color"]');
-            if (meta) {
-              meta.setAttribute('content', theme === 'black' ? '#111113' : theme === 'white' ? '#ffffff' : '#f5efeb');
-            }
-          } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-            document.documentElement.setAttribute('data-theme', 'black');
+          var resolved = (theme === 'black' || theme === 'white' || theme === 'parchment')
+            ? theme
+            : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'black' : 'parchment');
+          var bgColor = resolved === 'black' ? '#111113' : resolved === 'white' ? '#ffffff' : '#f5efeb';
+
+          document.documentElement.setAttribute('data-theme', resolved);
+          document.documentElement.style.backgroundColor = bgColor;
+          if (resolved === 'black') {
             document.documentElement.classList.add('dark');
             document.documentElement.style.colorScheme = 'dark';
+          } else {
+            document.documentElement.classList.remove('dark');
+            document.documentElement.style.colorScheme = 'light';
+          }
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) {
+            meta.setAttribute('content', bgColor);
           }
         } catch (e) {}
       })();

@@ -263,16 +263,7 @@ export const App: React.FC = () => {
   const commandInputRef = useRef<HTMLInputElement | null>(null);
   const skipBlurResetRef = useRef<boolean>(false);
 
-  // Active dock tab index & FLIP slide animation (resize geometry stays locked in CSS)
-  const dockIndicatorRef = useRef<HTMLDivElement>(null);
-  const dockSlideAnimRef = useRef<Animation | null>(null);
-  const prevViewRef = useRef(currentView);
-  const dockNavRef = useRef<HTMLElement>(null);
-  const readerBtnRef = useRef<HTMLButtonElement>(null);
-  const notesBtnRef = useRef<HTMLButtonElement>(null);
-  const plansBtnRef = useRef<HTMLButtonElement>(null);
-  const settingsBtnRef = useRef<HTMLButtonElement>(null);
-
+  // Active dock tab index (CSS transform transition glides smoothly on compositor after paint)
   const activeDockIndex =
     currentView === 'reader'
       ? 0
@@ -281,50 +272,6 @@ export const App: React.FC = () => {
       : currentView === 'plans'
       ? 2
       : 3;
-
-  useLayoutEffect(() => {
-    const prevView = prevViewRef.current;
-    prevViewRef.current = currentView;
-    if (prevView === currentView) return;
-
-    const pillEl = dockIndicatorRef.current;
-    if (!pillEl || typeof pillEl.animate !== 'function') return;
-    if (
-      typeof window !== 'undefined' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    ) {
-      return;
-    }
-
-    const getBtnForView = (view: typeof currentView) =>
-      view === 'reader'
-        ? readerBtnRef.current
-        : view === 'plans'
-        ? plansBtnRef.current
-        : view === 'notes'
-        ? notesBtnRef.current
-        : settingsBtnRef.current;
-
-    const prevBtn = getBtnForView(prevView);
-    const nextBtn = getBtnForView(currentView);
-    if (!prevBtn || !nextBtn || nextBtn.offsetWidth === 0) return;
-
-    const deltaX = prevBtn.offsetLeft - nextBtn.offsetLeft;
-    if (Math.abs(deltaX) < 1) return;
-
-    dockSlideAnimRef.current?.cancel();
-    dockSlideAnimRef.current = pillEl.animate(
-      [
-        { transform: `translate3d(${deltaX}px, 0, 0)` },
-        { transform: 'translate3d(0, 0, 0)' },
-      ],
-      {
-        duration: 320,
-        easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
-        fill: 'none',
-      }
-    );
-  }, [currentView]);
 
   // Reset shared window scroll to top when switching into non-reader views (e.g. Notes)
   useLayoutEffect(() => {
@@ -407,9 +354,26 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  // Sync Theme with DOM and Meta theme-color
+  // Sync Theme with DOM and Meta theme-color (hardened for iOS Safari extended top bar)
   useEffect(() => {
+    const themeColors: Record<ThemeMode, string> = {
+      parchment: '#f5efeb',
+      white: '#ffffff',
+      black: '#111113',
+    };
+    const nextColor = themeColors[theme];
+
+    const replaceThemeColorMeta = (color: string) => {
+      document.querySelectorAll('meta[name="theme-color"]').forEach((node) => node.remove());
+      const freshMeta = document.createElement('meta');
+      freshMeta.name = 'theme-color';
+      freshMeta.content = color;
+      document.head.appendChild(freshMeta);
+    };
+
     document.documentElement.setAttribute('data-theme', theme);
+    document.documentElement.style.backgroundColor = nextColor;
+    document.body.style.backgroundColor = nextColor;
     if (theme === 'black') {
       document.documentElement.classList.add('dark');
       document.documentElement.style.colorScheme = 'dark';
@@ -418,15 +382,27 @@ export const App: React.FC = () => {
       document.documentElement.style.colorScheme = 'light';
     }
 
-    const themeColors: Record<ThemeMode, string> = {
-      parchment: '#f5efeb',
-      white: '#ffffff',
-      black: '#111113',
+    replaceThemeColorMeta(nextColor);
+
+    // Re-insert meta[name="theme-color"] after paint & CSS transitions settle so iOS Safari
+    // re-samples both the fresh meta tag and settled top-edge pixels immediately.
+    let rafInner = 0;
+    const rafOuter = window.requestAnimationFrame(() => {
+      rafInner = window.requestAnimationFrame(() => {
+        replaceThemeColorMeta(nextColor);
+      });
+    });
+    const settleTimer = window.setTimeout(() => {
+      replaceThemeColorMeta(nextColor);
+    }, 240);
+
+    const handleVisibilityOrShow = () => {
+      if (document.visibilityState === 'visible') {
+        replaceThemeColorMeta(nextColor);
+      }
     };
-    const metaTheme = document.querySelector('meta[name="theme-color"]');
-    if (metaTheme) {
-      metaTheme.setAttribute('content', themeColors[theme]);
-    }
+    window.addEventListener('pageshow', handleVisibilityOrShow);
+    document.addEventListener('visibilitychange', handleVisibilityOrShow);
 
     const splash = document.getElementById('pwa-splash');
     if (splash) {
@@ -436,6 +412,14 @@ export const App: React.FC = () => {
     if (appInitialized) {
       void saveTheme(theme);
     }
+
+    return () => {
+      window.cancelAnimationFrame(rafOuter);
+      window.cancelAnimationFrame(rafInner);
+      window.clearTimeout(settleTimer);
+      window.removeEventListener('pageshow', handleVisibilityOrShow);
+      document.removeEventListener('visibilitychange', handleVisibilityOrShow);
+    };
   }, [theme, appInitialized]);
 
   const handleUpdateAppearance = (newSettings: AppearanceSettings) => {
@@ -1218,7 +1202,7 @@ export const App: React.FC = () => {
     enabled: currentView === 'reader',
     forceVisible: isReaderOmnibarFocused || (isSuggestionsOpen && omnibarSuggestions.length > 0),
     resetKey: `${currentView}-${position.bookId}-${position.chapter}-${isChapterReady ? 1 : 0}-${scrollRequestSeq}`,
-    showUpDelta: 2,
+    showUpDelta: 8,
     measureHeight: false,
   });
 
@@ -1468,7 +1452,7 @@ export const App: React.FC = () => {
       : 'leading-loose md:leading-loose';
 
   return (
-    <div className={`min-h-screen w-full max-w-full bg-[var(--bg-app)] text-[var(--text-primary)] ${currentView === 'reader' ? readerFontFamilyClass : 'font-sans'} transition-colors duration-200`}>
+    <div className={`min-h-screen w-full max-w-full bg-[var(--bg-app)] text-[var(--text-primary)] ${currentView === 'reader' ? readerFontFamilyClass : 'font-sans'}`}>
       {/* Dismissible Splash Install Elicitation Banner (hidden if already installed or dismissed) */}
       <SplashInstallBanner />
 
@@ -1480,7 +1464,7 @@ export const App: React.FC = () => {
         >
           <header
             ref={readerOmnibarRef}
-            className={`relative z-20 pointer-events-auto bg-[var(--bg-omnibar)] backdrop-blur-md reader-omnibar-header border-b ${
+            className={`relative z-20 pointer-events-auto reader-omnibar-header border-b ${
               isReaderOmnibarFull ? 'is-expanded' : 'is-compact'
             } ${
               isSuggestionsOpen && omnibarSuggestions.length > 0 ? 'has-suggestions' : ''
@@ -1490,6 +1474,11 @@ export const App: React.FC = () => {
                 : 'border-transparent'
             }`}
           >
+          {/* Isolated backdrop layer prevents Chromium backdrop-filter flattening during height/opacity morphs */}
+          <div
+            className="pointer-events-none absolute inset-0 bg-[var(--bg-omnibar)] backdrop-blur-md -z-10"
+            aria-hidden="true"
+          />
           {/* Compact Shrunk State: Book & Chapter Name Only (tap to expand full omnibar) */}
           <div
             className="reader-omnibar-compact-layer"
@@ -1973,7 +1962,7 @@ export const App: React.FC = () => {
 
       {/* Sticky Header for Settings View */}
       {currentView === 'settings' && (
-        <header className="sticky top-0 z-40 bg-[var(--bg-omnibar)] backdrop-blur-md pt-4 sm:pt-5 pb-4 px-4 sm:px-8 transition-colors">
+        <header className="sticky top-0 z-40 bg-[var(--bg-omnibar)] backdrop-blur-md pt-4 sm:pt-5 pb-4 px-4 sm:px-8">
           <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
             <div className="flex-1 min-w-0 flex items-center py-1">
               <h1 className="w-full font-sans text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight text-[var(--text-primary)] py-1 m-0 leading-normal select-none truncate">
@@ -2252,24 +2241,26 @@ export const App: React.FC = () => {
           })()}
 
           <nav
-            ref={dockNavRef}
             aria-label="App navigation"
             aria-hidden={currentView === 'reader' && !isReaderOmnibarVisible}
             style={{ '--dock-active': activeDockIndex } as React.CSSProperties}
-            className={`relative w-full pointer-events-auto font-sans h-16 p-1.5 flex items-center gap-[var(--dock-gap)] rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm dock-bottom-chrome ${
+            className={`relative w-full pointer-events-auto font-sans h-16 p-1.5 flex items-center gap-[var(--dock-gap)] rounded-full dock-bottom-chrome ${
               currentView === 'reader' && !isReaderOmnibarVisible ? 'is-dock-hidden' : ''
             }`}
           >
-          {/* Active Background Indicator Track (CSS locks slot width/offset during resizes; FLIP handles tab glide) */}
+          {/* Isolated backdrop layer prevents Chromium backdrop-filter flattening child transitions */}
+          <div
+            className="pointer-events-none absolute inset-0 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm"
+            aria-hidden="true"
+          />
+          {/* Active Background Indicator Track (pure compositor CSS transform transition glides cleanly across viewports) */}
           <div className="dock-indicator-track absolute inset-1.5 pointer-events-none" aria-hidden="true">
             <div
-              ref={dockIndicatorRef}
               className="dock-indicator-pill absolute top-0 h-[50px] rounded-full bg-[var(--text-primary)] shadow-sm"
             />
           </div>
 
           <button
-            ref={readerBtnRef}
             type="button"
             tabIndex={currentView === 'reader' && !isReaderOmnibarVisible ? -1 : 0}
             onClick={() => handleSelectTab('reader')}
@@ -2301,7 +2292,6 @@ export const App: React.FC = () => {
           </button>
 
           <button
-            ref={notesBtnRef}
             type="button"
             tabIndex={currentView === 'reader' && !isReaderOmnibarVisible ? -1 : 0}
             onClick={() => handleSelectTab('notes')}
@@ -2333,7 +2323,6 @@ export const App: React.FC = () => {
           </button>
 
           <button
-            ref={plansBtnRef}
             type="button"
             tabIndex={currentView === 'reader' && !isReaderOmnibarVisible ? -1 : 0}
             onClick={() => handleSelectTab('plans')}
@@ -2368,7 +2357,6 @@ export const App: React.FC = () => {
           </button>
 
           <button
-            ref={settingsBtnRef}
             type="button"
             tabIndex={currentView === 'reader' && !isReaderOmnibarVisible ? -1 : 0}
             onClick={() => handleSelectTab('settings')}
