@@ -27,6 +27,10 @@ export interface ModalProps {
  * 7. Keyboard accessibility (Escape key dismiss, accessible aria-modal).
  * 8. Click outside backdrop to dismiss.
  */
+let openModalCount = 0;
+let savedBodyOverflow = '';
+let savedBodyOverscrollBehavior = '';
+
 export const Modal: React.FC<ModalProps> = ({
   isOpen,
   onClose,
@@ -40,19 +44,24 @@ export const Modal: React.FC<ModalProps> = ({
 }) => {
   const modalCardRef = useRef<HTMLDivElement>(null);
 
-  // Lock background body scroll whenever the modal is open
+  // Reference-counted background scroll lock so nested modals never trap body overflow: hidden
   useEffect(() => {
     if (!isOpen) return;
 
-    const originalOverflow = document.body.style.overflow;
-    const originalOverscrollBehavior = document.body.style.overscrollBehavior;
-
-    document.body.style.overflow = 'hidden';
-    document.body.style.overscrollBehavior = 'none';
+    if (openModalCount === 0) {
+      savedBodyOverflow = document.body.style.overflow;
+      savedBodyOverscrollBehavior = document.body.style.overscrollBehavior;
+      document.body.style.overflow = 'hidden';
+      document.body.style.overscrollBehavior = 'none';
+    }
+    openModalCount += 1;
 
     return () => {
-      document.body.style.overflow = originalOverflow;
-      document.body.style.overscrollBehavior = originalOverscrollBehavior;
+      openModalCount = Math.max(0, openModalCount - 1);
+      if (openModalCount === 0) {
+        document.body.style.overflow = savedBodyOverflow;
+        document.body.style.overscrollBehavior = savedBodyOverscrollBehavior;
+      }
     };
   }, [isOpen]);
 

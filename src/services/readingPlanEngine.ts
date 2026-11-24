@@ -1,8 +1,10 @@
 import { CANONICAL_BOOKS, getBookById } from '../data/canonicalBooks';
+import { getChapterVerseCount } from '../data/canonicalVerseCounts';
 import type {
   PlanScope,
   PlanDaysPerWeek,
   PlanTrackStyle,
+  PlanDivisionGranularity,
   PlanReadingPortion,
   PlanDaySchedule,
   ReadingPlan,
@@ -117,7 +119,8 @@ export function getChaptersForScope(scope: PlanScope, customBookIds?: number[]):
     case 'wisdom-poetry':
       return CANONICAL_BOOKS.filter((b) => b.section === 'Poetry').flatMap((b) => getChaptersForBook(b.id));
     case 'custom-books': {
-      const bookIds = customBookIds && customBookIds.length > 0 ? customBookIds : [1]; // default Genesis if empty
+      const bookIds = Array.isArray(customBookIds) ? customBookIds : [];
+      if (bookIds.length === 0) return [];
       const idSet = new Set(bookIds);
       return CANONICAL_BOOKS.filter((b) => idSet.has(b.id)).flatMap((b) => getChaptersForBook(b.id));
     }
@@ -387,6 +390,189 @@ function groupChaptersIntoPortions(trackName: string, chapters: ChapterRef[]): P
   return portions;
 }
 
+interface VerseSegment {
+  bookId: number;
+  bookName: string;
+  chapter: number;
+  startVerse: number;
+  endVerse: number;
+  chapterVerseCount: number;
+}
+
+function formatVersePortionDisplayRef(
+  bookName: string,
+  startChapter: number,
+  startVerse: number,
+  endChapter: number,
+  endVerse: number,
+  endChapterVerseCount: number
+): string {
+  const isWholeChapters = startVerse === 1 && endVerse === endChapterVerseCount;
+  if (isWholeChapters) {
+    return startChapter === endChapter
+      ? `${bookName} ${startChapter}`
+      : `${bookName} ${startChapter}–${endChapter}`;
+  }
+
+  if (startChapter === endChapter) {
+    return startVerse === endVerse
+      ? `${bookName} ${startChapter}:${startVerse}`
+      : `${bookName} ${startChapter}:${startVerse}–${endVerse}`;
+  }
+
+  return `${bookName} ${startChapter}:${startVerse}–${endChapter}:${endVerse}`;
+}
+
+/**
+ * Groups contiguous VerseSegments into clean PlanReadingPortions e.g. "1 Thessalonians 1:1–2:2"
+ */
+function groupVerseSegmentsIntoPortions(
+  trackName: string,
+  segments: VerseSegment[]
+): PlanReadingPortion[] {
+  if (segments.length === 0) return [];
+
+  const portions: PlanReadingPortion[] = [];
+  let curBookId = segments[0].bookId;
+  let curBookName = segments[0].bookName;
+  let startChapter = segments[0].chapter;
+  let startVerse = segments[0].startVerse;
+  let endChapter = segments[0].chapter;
+  let endVerse = segments[0].endVerse;
+  let endChapterVerseCount = segments[0].chapterVerseCount;
+  let verseCount = segments[0].endVerse - segments[0].startVerse + 1;
+
+  const flush = () => {
+    portions.push({
+      trackName,
+      bookId: curBookId,
+      bookName: curBookName,
+      startChapter,
+      endChapter,
+      startVerse,
+      endVerse,
+      verseCount,
+      displayRef: formatVersePortionDisplayRef(
+        curBookName,
+        startChapter,
+        startVerse,
+        endChapter,
+        endVerse,
+        endChapterVerseCount
+      ),
+    });
+  };
+
+  for (let i = 1; i < segments.length; i++) {
+    const seg = segments[i];
+    const isSameChapterContiguous =
+      seg.bookId === curBookId &&
+      seg.chapter === endChapter &&
+      seg.startVerse === endVerse + 1;
+    const isNextChapterContiguous =
+      seg.bookId === curBookId &&
+      seg.chapter === endChapter + 1 &&
+      endVerse === endChapterVerseCount &&
+      seg.startVerse === 1;
+
+    if (isSameChapterContiguous || isNextChapterContiguous) {
+      endChapter = seg.chapter;
+      endVerse = seg.endVerse;
+      endChapterVerseCount = seg.chapterVerseCount;
+      verseCount += seg.endVerse - seg.startVerse + 1;
+    } else {
+      flush();
+      curBookId = seg.bookId;
+      curBookName = seg.bookName;
+      startChapter = seg.chapter;
+      startVerse = seg.startVerse;
+      endChapter = seg.chapter;
+      endVerse = seg.endVerse;
+      endChapterVerseCount = seg.chapterVerseCount;
+      verseCount = seg.endVerse - seg.startVerse + 1;
+    }
+  }
+
+  flush();
+  return portions;
+}
+
+/**
+ * Slices a track's chapters across active reading days at verse-level granularity
+ */
+function sliceTrackByVerses(
+  trackName: string,
+  chapters: ChapterRef[],
+  totalActiveDays: number
+): PlanReadingPortion[][] {
+  if (chapters.length === 0) {
+    return Array.from({ length: totalActiveDays }, () => []);
+  }
+
+  interface ChapterSpan {
+    bookId: number;
+    bookName: string;
+    chapter: number;
+    verseCount: number;
+    cumStart: number;
+    cumEnd: number;
+  }
+
+  const spans: ChapterSpan[] = [];
+  let totalVerses = 0;
+  for (let i = 0; i < chapters.length; i++) {
+    const ch = chapters[i];
+    const vCount = getChapterVerseCount(ch.bookId, ch.chapter);
+    spans.push({
+      bookId: ch.bookId,
+      bookName: ch.bookName,
+      chapter: ch.chapter,
+      verseCount: vCount,
+      cumStart: totalVerses,
+      cumEnd: totalVerses + vCount,
+    });
+    totalVerses += vCount;
+  }
+
+  if (totalVerses === 0) {
+    return Array.from({ length: totalActiveDays }, () => []);
+  }
+
+  const slicesForTrack: PlanReadingPortion[][] = [];
+  let spanCursor = 0;
+
+  for (let i = 0; i < totalActiveDays; i++) {
+    const dayStart = Math.floor((i * totalVerses) / totalActiveDays);
+    const dayEndRaw = Math.min(totalVerses, Math.floor(((i + 1) * totalVerses) / totalActiveDays));
+    const dayEnd = Math.max(dayStart + 1, dayEndRaw);
+
+    while (spanCursor < spans.length && spans[spanCursor].cumEnd <= dayStart) {
+      spanCursor++;
+    }
+
+    const segments: VerseSegment[] = [];
+    for (let j = spanCursor; j < spans.length && spans[j].cumStart < dayEnd; j++) {
+      const span = spans[j];
+      const startVerse = Math.max(1, dayStart - span.cumStart + 1);
+      const endVerse = Math.min(span.verseCount, dayEnd - span.cumStart);
+      if (startVerse <= endVerse) {
+        segments.push({
+          bookId: span.bookId,
+          bookName: span.bookName,
+          chapter: span.chapter,
+          startVerse,
+          endVerse,
+          chapterVerseCount: span.verseCount,
+        });
+      }
+    }
+
+    slicesForTrack.push(groupVerseSegmentsIntoPortions(trackName, segments));
+  }
+
+  return slicesForTrack;
+}
+
 /**
  * Calculates smart pacing summary for a configuration
  */
@@ -399,6 +585,12 @@ export function calculatePlanPacingSummary(
 ): PlanPacingSummary {
   const tracks = buildTracksForPlan(scope, trackStyle, customBookIds);
   const totalChapters = tracks.reduce((acc, t) => acc + t.chapters.length, 0);
+  const totalVerses = tracks.reduce(
+    (acc, t) =>
+      acc +
+      t.chapters.reduce((chAcc, ch) => chAcc + getChapterVerseCount(ch.bookId, ch.chapter), 0),
+    0
+  );
 
   let activeDaysCount = 0;
   let restDaysCount = 0;
@@ -413,12 +605,15 @@ export function calculatePlanPacingSummary(
   }
 
   const averageChaptersPerDay = activeDaysCount > 0 ? Number((totalChapters / activeDaysCount).toFixed(1)) : 0;
+  const averageVersesPerDay = activeDaysCount > 0 ? Number((totalVerses / activeDaysCount).toFixed(1)) : 0;
 
   return {
     totalChapters,
+    totalVerses,
     activeDaysCount,
     restDaysCount,
     averageChaptersPerDay,
+    averageVersesPerDay,
     trackCount: tracks.length,
   };
 }
@@ -431,8 +626,10 @@ export function generatePlanSchedule(
   durationDays: number,
   daysPerWeek: PlanDaysPerWeek,
   trackStyle: PlanTrackStyle,
-  customBookIds?: number[]
+  customBookIds?: number[],
+  options?: { granularity?: PlanDivisionGranularity }
 ): PlanDaySchedule[] {
+  const granularity: PlanDivisionGranularity = options?.granularity ?? 'chapter';
   const tracks = buildTracksForPlan(scope, trackStyle, customBookIds);
 
   // Determine active days vs rest days
@@ -450,10 +647,15 @@ export function generatePlanSchedule(
   const totalActiveDays = activeDayIndices.length;
   if (totalActiveDays === 0) return [];
 
-  // For each track, slice chapters across active days proportionally
+  // For each track, slice portions across active days proportionally
   const trackSlices: Map<number, PlanReadingPortion[][]> = new Map();
 
   tracks.forEach((track, trackIdx) => {
+    if (granularity === 'verse') {
+      trackSlices.set(trackIdx, sliceTrackByVerses(track.trackName, track.chapters, totalActiveDays));
+      return;
+    }
+
     const trackChapters = track.chapters;
     const count = trackChapters.length;
     const slicesForTrack: PlanReadingPortion[][] = [];
@@ -602,11 +804,25 @@ export const CLASSICAL_PRESETS: PlanPresetDefinition[] = [
 export function getAssignedChaptersForDay(daySchedule: PlanDaySchedule): PlanAssignedChapter[] {
   const chapters: PlanAssignedChapter[] = [];
   daySchedule.readings.forEach((portion, pIdx) => {
+    const hasVerseRange = portion.startVerse !== undefined && portion.endVerse !== undefined;
     for (let c = portion.startChapter; c <= portion.endChapter; c++) {
+      const startVerse = hasVerseRange
+        ? c === portion.startChapter
+          ? portion.startVerse
+          : 1
+        : undefined;
+      const endVerse = hasVerseRange
+        ? c === portion.endChapter
+          ? portion.endVerse
+          : getChapterVerseCount(portion.bookId, c)
+        : undefined;
+
       chapters.push({
         bookId: portion.bookId,
         bookName: portion.bookName,
         chapter: c,
+        ...(startVerse !== undefined ? { startVerse } : {}),
+        ...(endVerse !== undefined ? { endVerse } : {}),
         portionIndex: pIdx,
         displayRef: portion.displayRef,
         trackName: portion.trackName,

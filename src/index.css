@@ -407,19 +407,16 @@ a:focus-visible,
   scrollbar-width: none;
 }
 
-/* Dock & Floating Action Button Motion Transitions */
+/* Dock & Floating Action Button Motion Transitions (Transform & Opacity Only) */
 .dock-nav-transition {
-  transition: transform 450ms cubic-bezier(0.16, 1, 0.3, 1),
-              background-color 200ms ease,
-              border-color 200ms ease,
-              box-shadow 300ms ease;
+  transition: transform 450ms cubic-bezier(0.16, 1, 0.3, 1);
+  backface-visibility: hidden;
   will-change: transform;
 }
 
-/* Fluid dock movement animation between center and left viewport edge */
+/* Fluid dock movement animation across viewports */
 .dock-nav-animated {
   --dock-gap: 0.25rem;
-  will-change: transform;
 }
 
 @media (min-width: 640px) {
@@ -439,49 +436,70 @@ a:focus-visible,
 
 /* On mobile (< 768px), tab bar fills available width from the left edge */
 .dock-nav-animated.dock-centered {
-  transform: translateX(0);
+  transform: translate3d(0, 0, 0);
 }
 
-/* On tablet (768px - 1023px), center the compact dock horizontally */
+/* On tablet (768px - 1023px), center the compact dock horizontally via pure transform */
 @media (min-width: 768px) {
   .dock-nav-animated.dock-centered {
-    transform: translateX(calc(50vw - 50% - 2rem));
+    transform: translate3d(calc(50vw - 50% - 2rem), 0, 0);
   }
+}
+
+/* On desktop (>= 1024px), centered dock shifts slightly left in Notes to balance action button */
+@media (min-width: 1024px) {
+  .dock-nav-animated.dock-centered {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.dock-nav-animated.dock-anchored-left {
+  transform: translate3d(0, 0, 0);
 }
 
 @media (min-width: 1024px) {
-  .dock-nav-animated.dock-centered {
-    transform: translateX(0);
+  .dock-nav-animated.dock-anchored-left {
+    transform: translate3d(-2.5rem, 0, 0);
   }
-}
-
-/* When in notes view: anchored to left edge on mobile and tablet, centered on desktop */
-.dock-nav-animated.dock-anchored-left {
-  transform: translateX(0);
 }
 
 .dock-action-wrapper {
-  transition: width 360ms cubic-bezier(0.16, 1, 0.3, 1),
-              margin 360ms cubic-bezier(0.16, 1, 0.3, 1),
-              opacity 260ms cubic-bezier(0.16, 1, 0.3, 1),
-              transform 360ms cubic-bezier(0.16, 1, 0.3, 1);
   backface-visibility: hidden;
+  will-change: transform, opacity;
+  transition: opacity 260ms cubic-bezier(0.16, 1, 0.3, 1),
+              transform 360ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .dock-nav-transition,
-  .dock-indicator-pill,
-  .dock-action-wrapper {
-    transition-duration: 0.01ms !important;
+.dock-action-wrapper.is-open {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  pointer-events: auto;
+}
+
+.dock-action-wrapper.is-closed {
+  opacity: 0;
+  transform: translate3d(0.75rem, 0, 0) scale(0.5);
+  pointer-events: none;
+}
+
+@media (min-width: 1024px) {
+  .dock-action-wrapper.is-open {
+    transform: translate3d(-2.5rem, 0, 0) scale(1);
+  }
+
+  .dock-action-wrapper.is-closed {
+    transform: translate3d(-1.75rem, 0, 0) scale(0.5);
   }
 }
 
-/* Auto-hiding Sticky Slide-Down Omnibar Chrome (Reader & Notes) */
+/* Auto-hiding Sticky Slide-Down Omnibar Chrome (Notes) */
 .omnibar-sticky-chrome {
+  opacity: 1;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
-  will-change: transform;
-  transition: transform 300ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
+  transition: transform 300ms cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 220ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .omnibar-sticky-chrome.is-omnibar-hidden {
@@ -492,40 +510,66 @@ a:focus-visible,
   transform: translate3d(0, calc(-1 * var(--omni-h, 72px)), 0);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .omnibar-sticky-chrome {
-    transition-duration: 0.01ms !important;
-  }
-}
-
-/* Reader Shrinking Sticky Omnibar Chrome */
+/* Reader Shrinking Sticky Omnibar Chrome (Pure Transform & Opacity, Zero Layout Reflow) */
 .reader-omnibar-shell {
   min-height: var(--reader-chrome-full-h, auto);
 }
 
 .reader-omnibar-header {
   position: relative;
-  height: var(--reader-omni-full-h, auto);
-  overflow: hidden;
-  transition: height 320ms cubic-bezier(0.16, 1, 0.3, 1) 0ms,
-              border-color 220ms ease,
-              box-shadow 220ms ease;
-}
-
-.reader-omnibar-header.is-expanded.has-suggestions {
-  overflow: visible;
 }
 
 .reader-omnibar-header.is-compact {
-  height: 2.5rem;
-  transition: height 320ms cubic-bezier(0.16, 1, 0.3, 1) 0ms,
-              border-color 220ms ease,
-              box-shadow 220ms ease;
+  pointer-events: none;
+}
+
+.reader-omnibar-backdrop-frame {
+  position: absolute;
+  inset: 0;
+  z-index: -10;
+  pointer-events: none;
+  clip-path: inset(0 0 -16px 0);
+}
+
+.reader-omnibar-header.is-expanded.has-suggestions .reader-omnibar-backdrop-frame {
+  clip-path: none;
+}
+
+.reader-omnibar-backdrop {
+  position: absolute;
+  inset: 0;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  will-change: transform, opacity;
+  transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 240ms ease,
+              opacity 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.reader-omnibar-header.is-compact .reader-omnibar-backdrop {
+  transform: translate3d(0, calc(2.5rem - 100%), 0);
 }
 
 @media (min-width: 640px) {
-  .reader-omnibar-header.is-compact {
-    height: 2.75rem;
+  .reader-omnibar-header.is-compact .reader-omnibar-backdrop {
+    transform: translate3d(0, calc(2.75rem - 100%), 0);
+  }
+}
+
+.reader-plan-bar {
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  will-change: transform;
+  transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.reader-omnibar-header.is-compact ~ .reader-plan-bar {
+  transform: translate3d(0, calc(2.5rem - var(--reader-omni-full-h, 4.75rem)), 0);
+}
+
+@media (min-width: 640px) {
+  .reader-omnibar-header.is-compact ~ .reader-plan-bar {
+    transform: translate3d(0, calc(2.75rem - var(--reader-omni-full-h, 5rem)), 0);
   }
 }
 
@@ -533,6 +577,7 @@ a:focus-visible,
   opacity: 1;
   transform: translate3d(0, 0, 0) scale(1);
   transform-origin: center top;
+  will-change: transform, opacity;
   transition: opacity 240ms cubic-bezier(0.16, 1, 0.3, 1) 60ms,
               transform 280ms cubic-bezier(0.16, 1, 0.3, 1) 40ms;
 }
@@ -556,6 +601,7 @@ a:focus-visible,
   opacity: 0;
   transform: translate3d(0, 8px, 0) scale(0.96);
   pointer-events: none;
+  will-change: transform, opacity;
   transition: opacity 160ms cubic-bezier(0.4, 0, 1, 1) 0ms,
               transform 180ms cubic-bezier(0.4, 0, 1, 1) 0ms;
 }
@@ -572,15 +618,6 @@ a:focus-visible,
   .reader-omnibar-compact-layer {
     height: 2.75rem;
     padding-inline: 2rem;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .reader-omnibar-header,
-  .reader-omnibar-full-layer,
-  .reader-omnibar-compact-layer {
-    transition-duration: 0.01ms !important;
-    transition-delay: 0ms !important;
   }
 }
 
@@ -656,13 +693,101 @@ a:focus-visible,
   }
 }
 
+/* Deliberate Reduced Motion: replace spatial sliding/scaling with clear, smooth opacity & color cross-fades (zero 0.01ms snaps) */
 @media (prefers-reduced-motion: reduce) {
+  .dock-nav-transition {
+    transition: none !important;
+  }
+
+  .dock-indicator-pill {
+    opacity: 0 !important;
+    transition: none !important;
+  }
+
+  .dock-bottom-chrome .dock-nav-item {
+    transition: color 220ms cubic-bezier(0.16, 1, 0.3, 1),
+                background-color 220ms cubic-bezier(0.16, 1, 0.3, 1),
+                opacity 220ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+    transform: none !important;
+  }
+
+  .dock-bottom-chrome:not(.is-dock-hidden) .dock-nav-item:hover,
+  .dock-bottom-chrome:not(.is-dock-hidden) .dock-nav-item:active {
+    transform: none !important;
+  }
+
+  .dock-bottom-chrome .dock-nav-item[aria-current="page"] {
+    background-color: var(--text-primary);
+  }
+
+  .dock-action-wrapper,
+  .omnibar-sticky-chrome,
+  .reader-omnibar-full-layer,
+  .reader-omnibar-compact-layer,
+  .reader-omnibar-backdrop,
+  .reader-plan-bar,
   .dock-bottom-chrome,
-  .dock-bottom-chrome .dock-nav-item,
   .dock-bottom-chrome .dock-indicator-track,
   .reader-chapter-arrows {
-    transition-duration: 0.01ms !important;
+    transition-property: opacity, border-color !important;
+    transition-duration: 220ms !important;
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1) !important;
     transition-delay: 0ms !important;
+  }
+
+  .omnibar-sticky-chrome.is-omnibar-hidden {
+    opacity: 0;
+    transform: none !important;
+  }
+
+  .reader-omnibar-header.is-compact .reader-omnibar-backdrop {
+    opacity: 0;
+    transform: none !important;
+  }
+
+  .reader-omnibar-compact-layer {
+    background-color: var(--bg-omnibar);
+    border-bottom: 1px solid color-mix(in srgb, var(--line-subtle) 70%, transparent);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    transform: none !important;
+  }
+
+  .reader-omnibar-header.is-compact ~ .reader-plan-bar {
+    transform: translate3d(0, calc(2.5rem - var(--reader-omni-full-h, 4.75rem)), 0);
+  }
+
+  @media (min-width: 640px) {
+    .reader-omnibar-header.is-compact ~ .reader-plan-bar {
+      transform: translate3d(0, calc(2.75rem - var(--reader-omni-full-h, 5rem)), 0);
+    }
+  }
+
+  .dock-bottom-chrome.is-dock-hidden,
+  .dock-bottom-chrome.is-dock-hidden .dock-nav-item,
+  .dock-bottom-chrome.is-dock-hidden .dock-indicator-track,
+  .reader-omnibar-header.is-compact .reader-omnibar-full-layer,
+  .reader-chapter-arrows.is-dock-hidden {
+    transform: none !important;
+  }
+
+  .reader-chapter-arrows.is-dock-hidden {
+    opacity: 0.92;
+  }
+
+  .dock-action-wrapper.is-closed {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  @media (min-width: 1024px) {
+    .dock-action-wrapper.is-closed {
+      transform: translate3d(-2.5rem, 0, 0) scale(1);
+    }
+  }
+
+  .animate-fade-in {
+    animation-duration: 220ms !important;
+    animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1) !important;
   }
 }
 
@@ -715,11 +840,6 @@ body:has(#pwa-splash:not(.splash-dismissed))::-webkit-scrollbar {
   pointer-events: none;
   overflow: hidden;
   contain: paint;
-  will-change: height, opacity;
-  transform: translateZ(0);
-  -webkit-transform: translateZ(0);
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
   transition: height 250ms cubic-bezier(0.16, 1, 0.3, 1),
               opacity 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -734,10 +854,7 @@ body:has(#pwa-splash:not(.splash-dismissed))::-webkit-scrollbar {
 }
 
 .note-measured-content {
-  transform: translateZ(0);
-  -webkit-transform: translateZ(0);
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
+  contain: layout style;
 }
 
 .verse-accordion-grid {
@@ -747,11 +864,6 @@ body:has(#pwa-splash:not(.splash-dismissed))::-webkit-scrollbar {
   visibility: hidden;
   pointer-events: none;
   contain: paint;
-  will-change: grid-template-rows, opacity;
-  transform: translateZ(0);
-  -webkit-transform: translateZ(0);
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
   transition: grid-template-rows 250ms cubic-bezier(0.16, 1, 0.3, 1),
               opacity 130ms cubic-bezier(0.16, 1, 0.3, 1),
               visibility 0s linear 250ms;
@@ -785,10 +897,6 @@ body:has(#pwa-splash:not(.splash-dismissed))::-webkit-scrollbar {
 .verse-accordion-content {
   overflow: hidden;
   min-height: 0;
-  transform: translateZ(0);
-  -webkit-transform: translateZ(0);
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
 }
 
 .accordion-grid {
@@ -796,9 +904,6 @@ body:has(#pwa-splash:not(.splash-dismissed))::-webkit-scrollbar {
   grid-template-rows: 0fr;
   opacity: 0;
   transition: grid-template-rows 260ms cubic-bezier(0.16, 1, 0.3, 1), opacity 200ms cubic-bezier(0.16, 1, 0.3, 1);
-  will-change: grid-template-rows, opacity;
-  transform: translateZ(0);
-  -webkit-transform: translateZ(0);
 }
 
 .accordion-grid.is-open {

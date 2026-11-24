@@ -27,6 +27,7 @@ export const CopiedToast: React.FC<CopiedToastProps> = ({
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bumpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openRafRef = useRef<number | null>(null);
   const onDismissRef = useRef(onDismiss);
 
   useEffect(() => {
@@ -34,9 +35,20 @@ export const CopiedToast: React.FC<CopiedToastProps> = ({
   }, [onDismiss]);
 
   useEffect(() => {
+    const cancelPendingOpen = () => {
+      if (openTimerRef.current) {
+        clearTimeout(openTimerRef.current);
+        openTimerRef.current = null;
+      }
+      if (openRafRef.current !== null && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(openRafRef.current);
+        openRafRef.current = null;
+      }
+    };
+
     if (toast) {
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
-      if (openTimerRef.current) clearTimeout(openTimerRef.current);
+      cancelPendingOpen();
 
       const effectiveDuration =
         duration ?? (toast.variant === 'offline' ? 3600 : 2400);
@@ -59,36 +71,48 @@ export const CopiedToast: React.FC<CopiedToastProps> = ({
           }, 320);
         }, effectiveDuration);
       } else {
-        // Pre-loaded element: a brief frame delay (25ms) ensures the browser
-        // establishes the initial transform/opacity state before transitioning
-        openTimerRef.current = setTimeout(() => {
-          setIsOpen(true);
-        }, 25);
+        // Feature-detect double requestAnimationFrame with setTimeout fallback
+        if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+          openRafRef.current = window.requestAnimationFrame(() => {
+            openRafRef.current = window.requestAnimationFrame(() => {
+              openRafRef.current = null;
+              setIsOpen(true);
+            });
+          });
+        } else {
+          openTimerRef.current = setTimeout(() => {
+            setIsOpen(true);
+          }, 16);
+        }
 
         dismissTimerRef.current = setTimeout(() => {
           setIsOpen(false);
           setTimeout(() => {
             onDismissRef.current?.();
           }, 320);
-        }, effectiveDuration + 25);
+        }, effectiveDuration + 32);
       }
     } else {
       // Externally dismissed (e.g. Escape key pressed)
       if (isOpen) {
         setIsOpen(false);
         if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
-        if (openTimerRef.current) clearTimeout(openTimerRef.current);
+        cancelPendingOpen();
       }
     }
 
     return () => {
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
-      if (openTimerRef.current) clearTimeout(openTimerRef.current);
+      cancelPendingOpen();
       if (bumpTimerRef.current) clearTimeout(bumpTimerRef.current);
     };
   }, [toast, duration, isOpen]);
 
   const isOfflineVariant = displayToast.variant === 'offline';
+  const prefersReducedMotion =
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Preloaded in DOM: persists across renders so browser never drops transition frames
   return (
@@ -98,15 +122,18 @@ export const CopiedToast: React.FC<CopiedToastProps> = ({
       aria-hidden={!isOpen}
       className="fixed bottom-24 sm:bottom-28 left-1/2 z-50 select-none max-w-[90vw]"
       style={{
-        transform: `translate(-50%, ${isOpen ? (isBumping ? '-4px' : '0px') : '16px'}) scale(${
-          isOpen ? (isBumping ? '1.04' : '1') : '0.90'
-        })`,
+        transform: prefersReducedMotion
+          ? 'translate3d(-50%, 0, 0)'
+          : `translate3d(-50%, ${isOpen ? (isBumping ? '-4px' : '0px') : '16px'}, 0) scale(${
+              isOpen ? (isBumping ? '1.04' : '1') : '0.90'
+            })`,
         opacity: isOpen ? 1 : 0,
         pointerEvents: isOpen ? 'auto' : 'none',
         visibility: hasEverOpened ? 'visible' : 'hidden',
-        transition:
-          'transform 320ms cubic-bezier(0.16, 1, 0.3, 1), opacity 260ms cubic-bezier(0.16, 1, 0.3, 1)',
-        willChange: 'transform, opacity',
+        transition: prefersReducedMotion
+          ? 'opacity 160ms ease-out'
+          : 'transform 320ms cubic-bezier(0.16, 1, 0.3, 1), opacity 260ms cubic-bezier(0.16, 1, 0.3, 1)',
+        willChange: prefersReducedMotion ? 'opacity' : 'transform, opacity',
       }}
     >
       <div

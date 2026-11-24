@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Suspense, lazy } from 'react';
 import { getBookById, CANONICAL_BOOKS, getBookAbbreviation } from './data/canonicalBooks';
+import { getChapterVerseCount } from './data/canonicalVerseCounts';
 import { fetchChapterData } from './data/netBibleCorpus';
 import {
   getReadingPosition,
@@ -30,6 +31,7 @@ import type {
   PlanReadingSession,
   PlanDaySchedule,
   ReadingPlan,
+  PlanAssignedChapter,
 } from './types/readingPlan';
 import { getAssignedChaptersForDay } from './services/readingPlanEngine';
 import {
@@ -300,14 +302,15 @@ export const App: React.FC = () => {
   // Initial load
   useEffect(() => {
     let mounted = true;
-    Promise.all([
-      getReadingPosition(),
-      getAppearanceSettings(),
-      getExposedNotes(),
-      ensureNotesInitialized(),
-      ensurePlansInitialized(),
-    ]).then(
-      async ([savedPos, savedAppearance, savedExposed]) => {
+    (async () => {
+      try {
+        const [savedPos, savedAppearance, savedExposed] = await Promise.all([
+          getReadingPosition(),
+          getAppearanceSettings(),
+          getExposedNotes(),
+          ensureNotesInitialized(),
+          ensurePlansInitialized(),
+        ]);
         if (!mounted) return;
         setPosition(savedPos);
         setAppearance(savedAppearance);
@@ -344,11 +347,14 @@ export const App: React.FC = () => {
         } catch (err) {
           console.warn('Could not early load chapter notes:', err);
         }
+      } catch (err) {
+        console.warn('Initial load recovery:', err);
+      } finally {
         if (mounted) {
           setAppInitialized(true);
         }
       }
-    );
+    })();
     return () => {
       mounted = false;
     };
@@ -523,26 +529,38 @@ export const App: React.FC = () => {
   // Manage HTML PWA splash screen dismissal (honoring VITE_SIMULATE_SPLASH / ?splash=true)
   useEffect(() => {
     const splash = document.getElementById('pwa-splash');
-    if (!splash) return;
+    if (!splash) {
+      document.body.classList.remove('splash-active');
+      document.documentElement.classList.remove('splash-active');
+      return;
+    }
 
     const isSimulatingSplash = checkSimulateSplash();
+    let removeTimer: ReturnType<typeof setTimeout> | null = null;
 
     const dismissSplash = () => {
       document.body.classList.remove('splash-active');
       document.documentElement.classList.remove('splash-active');
       if (!splash.classList.contains('splash-dismissed')) {
         splash.classList.add('splash-dismissed');
-        const timer = setTimeout(() => {
+      }
+      if (!removeTimer) {
+        removeTimer = setTimeout(() => {
           if (splash.parentNode) splash.remove();
         }, 400);
-        return () => clearTimeout(timer);
       }
     };
+
+    // Never re-open splash if the user or fallback script already dismissed it
+    if (splash.classList.contains('splash-dismissed')) {
+      document.body.classList.remove('splash-active');
+      document.documentElement.classList.remove('splash-active');
+      return;
+    }
 
     if (isSimulatingSplash) {
       document.body.classList.add('splash-active');
       document.documentElement.classList.add('splash-active');
-      splash.classList.remove('splash-dismissed');
       // Developer escape hatch: click anywhere on splash or press Escape to dismiss
       const handleDismiss = () => dismissSplash();
       const handleKeyDown = (e: KeyboardEvent) => {
@@ -551,6 +569,7 @@ export const App: React.FC = () => {
       splash.addEventListener('click', handleDismiss);
       window.addEventListener('keydown', handleKeyDown);
       return () => {
+        if (removeTimer) clearTimeout(removeTimer);
         splash.removeEventListener('click', handleDismiss);
         window.removeEventListener('keydown', handleKeyDown);
       };
@@ -560,6 +579,10 @@ export const App: React.FC = () => {
     if (appInitialized) {
       dismissSplash();
     }
+
+    return () => {
+      if (removeTimer) clearTimeout(removeTimer);
+    };
   }, [appInitialized]);
 
   // Refresh notes when returning to reader
@@ -575,9 +598,10 @@ export const App: React.FC = () => {
   const navigateToPosition = useCallback(
     (
       target: { bookId: number; chapter: number; verse?: number },
-      options?: { isHistoryAction?: boolean }
+      options?: { isHistoryAction?: boolean; focusNote?: boolean }
     ) => {
       const isHistoryAction = options?.isHistoryAction ?? false;
+      const shouldFocusNote = options?.focusNote ?? true;
       const newPos: ReadingPosition = { bookId: target.bookId, chapter: target.chapter };
 
       setPosition(newPos);
@@ -615,15 +639,19 @@ export const App: React.FC = () => {
       if (target.verse) {
         pendingTopScrollRef.current = false;
         targetScrollVerseRef.current = target.verse;
-        setFocusedVerse(target.verse);
-        const verseKey = `${target.bookId}:${target.chapter}:${target.verse}`;
-        setExposedNotes((prev) => {
-          if (prev.has(verseKey)) return prev;
-          const next = new Set(prev);
-          next.add(verseKey);
-          void saveExposedNotes(Array.from(next));
-          return next;
-        });
+        if (shouldFocusNote) {
+          setFocusedVerse(target.verse);
+          const verseKey = `${target.bookId}:${target.chapter}:${target.verse}`;
+          setExposedNotes((prev) => {
+            if (prev.has(verseKey)) return prev;
+            const next = new Set(prev);
+            next.add(verseKey);
+            void saveExposedNotes(Array.from(next));
+            return next;
+          });
+        } else {
+          setFocusedVerse(null);
+        }
         setScrollRequestSeq((prev) => prev + 1);
       } else {
         targetScrollVerseRef.current = null;
@@ -675,17 +703,50 @@ export const App: React.FC = () => {
     navigateToPosition(nextHistoryItem, { isHistoryAction: true });
   }, [canGoForward, nextHistoryItem, historyIndex, navigateToPosition]);
 
-  useEffect(() => {
-    setCommand(
-      formatNavigationLabel({
-        bookId: position.bookId,
-        chapter: position.chapter,
-        ...(focusedVerse ? { verse: focusedVerse } : {}),
-      })
+  const formatAssignedChapterLabel = useCallback((ch?: PlanAssignedChapter | null): string => {
+    if (!ch) return '';
+    if (ch.startVerse !== undefined && ch.endVerse !== undefined) {
+      const canonicalCount = getChapterVerseCount(ch.bookId, ch.chapter);
+      if (ch.startVerse === 1 && ch.endVerse >= canonicalCount) {
+        return `${ch.bookName} ${ch.chapter}`;
+      }
+      if (ch.startVerse === ch.endVerse) {
+        return `${ch.bookName} ${ch.chapter}:${ch.startVerse}`;
+      }
+      return `${ch.bookName} ${ch.chapter}:${ch.startVerse}–${ch.endVerse}`;
+    }
+    return `${ch.bookName} ${ch.chapter}`;
+  }, []);
+
+  const activePlanAssignedChapter = useMemo(() => {
+    if (!planReadingSession) return null;
+    const current = planReadingSession.assignedChapters[planReadingSession.currentChapterIndex];
+    if (current && current.bookId === position.bookId && current.chapter === position.chapter) {
+      return current;
+    }
+    return (
+      planReadingSession.assignedChapters.find(
+        (c) => c.bookId === position.bookId && c.chapter === position.chapter
+      ) || null
     );
+  }, [planReadingSession, position.bookId, position.chapter]);
+
+  const currentLocationDisplayLabel = useMemo(() => {
+    if (activePlanAssignedChapter && !focusedVerse) {
+      return formatAssignedChapterLabel(activePlanAssignedChapter);
+    }
+    return formatNavigationLabel({
+      bookId: position.bookId,
+      chapter: position.chapter,
+      ...(focusedVerse ? { verse: focusedVerse } : {}),
+    });
+  }, [activePlanAssignedChapter, focusedVerse, position.bookId, position.chapter, formatAssignedChapterLabel]);
+
+  useEffect(() => {
+    setCommand(currentLocationDisplayLabel);
     setIsSuggestionsOpen(false);
     setActiveSuggestionIndex(0);
-  }, [position.bookId, position.chapter, focusedVerse]);
+  }, [currentLocationDisplayLabel]);
 
   const omnibarSuggestions = useMemo(() => {
     if (!isSuggestionsOpen) return [];
@@ -724,11 +785,13 @@ export const App: React.FC = () => {
   const executeCommandSubmit = useCallback(() => {
     const trimmed = command.trim();
     const lowerCmd = trimmed.toLowerCase();
-    const currentLabel = formatNavigationLabel({
-      bookId: position.bookId,
-      chapter: position.chapter,
-      ...(focusedVerse ? { verse: focusedVerse } : {}),
-    });
+    const currentLabel = currentLocationDisplayLabel;
+
+    if (trimmed === currentLabel) {
+      setIsSuggestionsOpen(false);
+      blurCommandInput();
+      return;
+    }
 
     if (lowerCmd === '/plans' || lowerCmd === '/plan' || lowerCmd === 'plans' || lowerCmd === 'plan') {
       setCurrentView('plans');
@@ -806,9 +869,9 @@ export const App: React.FC = () => {
     blurCommandInput();
   }, [
     command,
+    currentLocationDisplayLabel,
     position.bookId,
     position.chapter,
-    focusedVerse,
     isSuggestionsOpen,
     omnibarSuggestions,
     activeSuggestionIndex,
@@ -1269,6 +1332,9 @@ export const App: React.FC = () => {
   }, []);
 
   const compactOmnibarLabel = useMemo(() => {
+    if (activePlanAssignedChapter) {
+      return formatAssignedChapterLabel(activePlanAssignedChapter);
+    }
     if (
       chapterData &&
       chapterData.bookId === position.bookId &&
@@ -1278,7 +1344,7 @@ export const App: React.FC = () => {
     }
     const b = getBookById(position.bookId);
     return `${b?.name || 'Scripture'} ${position.chapter}`.trim();
-  }, [chapterData, position.bookId, position.chapter]);
+  }, [activePlanAssignedChapter, formatAssignedChapterLabel, chapterData, position.bookId, position.chapter]);
 
   useEffect(() => {
     if (currentView !== 'reader' || !planReadingSession) {
@@ -1344,6 +1410,25 @@ export const App: React.FC = () => {
     },
     [planReadingSession, navigateToPosition]
   );
+
+  const displayedVerses = useMemo(() => {
+    if (!chapterData) return [];
+    if (
+      !activePlanAssignedChapter ||
+      activePlanAssignedChapter.startVerse === undefined ||
+      activePlanAssignedChapter.endVerse === undefined
+    ) {
+      return chapterData.verses;
+    }
+    const canonicalCount = getChapterVerseCount(position.bookId, position.chapter);
+    const coversToEnd = activePlanAssignedChapter.endVerse >= canonicalCount;
+    const filtered = chapterData.verses.filter((v) => {
+      const afterStart = v.verse >= activePlanAssignedChapter.startVerse!;
+      const beforeEnd = coversToEnd || v.verse <= activePlanAssignedChapter.endVerse!;
+      return afterStart && beforeEnd;
+    });
+    return filtered.length > 0 ? filtered : chapterData.verses;
+  }, [chapterData, activePlanAssignedChapter, position.bookId, position.chapter]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -1464,21 +1549,22 @@ export const App: React.FC = () => {
         >
           <header
             ref={readerOmnibarRef}
-            className={`relative z-20 pointer-events-auto reader-omnibar-header border-b ${
-              isReaderOmnibarFull ? 'is-expanded' : 'is-compact'
+            className={`relative z-20 reader-omnibar-header ${
+              isReaderOmnibarFull ? 'is-expanded pointer-events-auto' : 'is-compact pointer-events-none'
             } ${
               isSuggestionsOpen && omnibarSuggestions.length > 0 ? 'has-suggestions' : ''
-            } ${
-              !planReadingSession && (isReaderScrolledPastTop || !isReaderOmnibarFull)
-                ? 'border-[var(--line-subtle)]/70 shadow-sm'
-                : 'border-transparent'
             }`}
           >
-          {/* Isolated backdrop layer prevents Chromium backdrop-filter flattening during height/opacity morphs */}
-          <div
-            className="pointer-events-none absolute inset-0 bg-[var(--bg-omnibar)] backdrop-blur-md -z-10"
-            aria-hidden="true"
-          />
+          {/* Isolated, transform-animated backdrop layer prevents layout reflow and Chromium blur flattening */}
+          <div className="reader-omnibar-backdrop-frame" aria-hidden="true">
+            <div
+              className={`reader-omnibar-backdrop bg-[var(--bg-omnibar)] backdrop-blur-md border-b transition-[transform,border-color] ${
+                !planReadingSession && (isReaderScrolledPastTop || !isReaderOmnibarFull)
+                  ? 'border-[var(--line-subtle)]/70 shadow-sm'
+                  : 'border-transparent'
+              }`}
+            />
+          </div>
           {/* Compact Shrunk State: Book & Chapter Name Only (tap to expand full omnibar) */}
           <div
             className="reader-omnibar-compact-layer"
@@ -1511,7 +1597,7 @@ export const App: React.FC = () => {
                 type="button"
                 onClick={handleHistoryBack}
                 disabled={!canGoBack}
-                className={`text-[var(--text-subtle)] transition-all p-1.5 -ml-1 rounded focus:outline-none shrink-0 ${
+                className={`text-[var(--text-subtle)] transition-[opacity,color] p-1.5 -ml-1 rounded focus:outline-none shrink-0 ${
                   canGoBack
                     ? 'opacity-60 hover:opacity-100 hover:text-[var(--text-primary)] cursor-pointer'
                     : 'opacity-20 cursor-not-allowed pointer-events-none'
@@ -1537,7 +1623,7 @@ export const App: React.FC = () => {
               <div className="relative inline-flex items-center justify-center shrink-0">
                 <button
                   type="button"
-                  className="text-[var(--text-subtle)] opacity-60 hover:opacity-100 hover:text-[var(--text-primary)] transition-all p-1 cursor-pointer focus:outline-none"
+                  className="text-[var(--text-subtle)] opacity-60 hover:opacity-100 hover:text-[var(--text-primary)] transition-[opacity,color] p-1 cursor-pointer focus:outline-none"
                   title="Browse Scripture (Books & Chapters)"
                   aria-label="Browse Scripture books and chapters"
                 >
@@ -1634,7 +1720,7 @@ export const App: React.FC = () => {
                         e.stopPropagation();
                         setIsSuggestionsOpen(false);
                       } else {
-                        setCommand(formatNavigationLabel(position));
+                        setCommand(currentLocationDisplayLabel);
                         commandInputRef.current?.blur();
                       }
                     }
@@ -1644,20 +1730,10 @@ export const App: React.FC = () => {
                     setIsReaderOmnibarFocused(false);
                     setIsSuggestionsOpen(false);
                     if (!skipBlurResetRef.current) {
-                      setCommand(
-                        formatNavigationLabel({
-                          bookId: position.bookId,
-                          chapter: position.chapter,
-                          ...(focusedVerse ? { verse: focusedVerse } : {}),
-                        })
-                      );
+                      setCommand(currentLocationDisplayLabel);
                     }
                   }}
-                  placeholder={
-                    chapterData
-                      ? `${chapterData.bookName} ${chapterData.chapter}`
-                      : `${getBookById(position.bookId)?.name || 'Scripture'} ${position.chapter}`
-                  }
+                  placeholder={currentLocationDisplayLabel}
                   className="w-full bg-transparent border-none outline-none font-sans text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight text-[var(--text-primary)] placeholder-[var(--input-placeholder)] py-1 pr-8 leading-normal select-text"
                   autoComplete="off"
                   spellCheck={false}
@@ -1737,7 +1813,7 @@ export const App: React.FC = () => {
                 type="button"
                 onClick={handleHistoryForward}
                 disabled={!canGoForward}
-                className={`text-[var(--text-subtle)] transition-all p-1.5 rounded focus:outline-none shrink-0 ${
+                className={`text-[var(--text-subtle)] transition-[opacity,color] p-1.5 rounded focus:outline-none shrink-0 ${
                   canGoForward
                     ? 'opacity-60 hover:opacity-100 hover:text-[var(--text-primary)] cursor-pointer'
                     : 'opacity-20 cursor-not-allowed pointer-events-none'
@@ -1765,7 +1841,7 @@ export const App: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setCurrentView('settings')}
-                  className={`px-2.5 py-1 rounded-full text-xs font-sans font-medium transition-all cursor-pointer flex items-center gap-1.5 ${
+                  className={`px-2.5 py-1 rounded-full text-xs font-sans font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
                     isOnline
                       ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20'
                       : 'text-yellow-700 dark:text-yellow-300 bg-yellow-500/15 hover:bg-yellow-500/25'
@@ -1792,7 +1868,7 @@ export const App: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsLoginSplashOpen(true)}
-                  className="px-2.5 py-1 rounded-full text-xs font-sans font-medium text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/8 border border-[var(--line-subtle)]/70 transition-all cursor-pointer flex items-center gap-1.5"
+                  className="px-2.5 py-1 rounded-full text-xs font-sans font-medium text-[var(--text-subtle)] hover:text-[var(--text-primary)] hover:bg-[var(--text-primary)]/8 border border-[var(--line-subtle)]/70 transition-colors cursor-pointer flex items-center gap-1.5"
                   title="Sync across devices"
                   aria-label="Sync across devices"
                 >
@@ -1807,14 +1883,18 @@ export const App: React.FC = () => {
           </div>
         </header>
 
-          {/* Plan Mode Completion Bar: rides cleanly beneath the omnibar (full or shrunk) */}
+          {/* Plan Mode Completion Bar: glides cleanly via transform beneath the omnibar */}
           {planReadingSession && (
             <div
               data-reader-plan-bar
-              className={`relative z-10 pointer-events-auto border-b border-[var(--line-subtle)] bg-[var(--bg-omnibar)] backdrop-blur-md px-4 sm:px-8 py-2 sm:py-2.5 transition-colors ${
-                isReaderScrolledPastTop ? 'shadow-sm' : ''
+              className={`reader-plan-bar relative z-10 pointer-events-auto border-b border-[var(--line-subtle)] px-4 sm:px-8 py-2 sm:py-2.5 ${
+                isReaderScrolledPastTop || !isReaderOmnibarFull ? 'shadow-sm' : ''
               }`}
             >
+              <div
+                className="pointer-events-none absolute inset-0 bg-[var(--bg-omnibar)] backdrop-blur-md -z-10"
+                aria-hidden="true"
+              />
           <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 text-xs font-sans">
             <div className="flex items-center gap-2 sm:gap-3 min-w-0">
               <button
@@ -1869,12 +1949,12 @@ export const App: React.FC = () => {
                             : 'bg-transparent'
                         }`}
                         style={{ width: `${segmentWidth}%` }}
-                        title={`Jump to ${ch.bookName} ${ch.chapter} (${idx + 1} of ${planReadingSession.assignedChapters.length})`}
+                        title={`Jump to ${formatAssignedChapterLabel(ch)} (${idx + 1} of ${planReadingSession.assignedChapters.length})`}
                       >
                         {isCurrent && (
                           <div
-                            className="h-full bg-[var(--text-primary)] transition-all duration-150 ease-out"
-                            style={{ width: `${chapterScrollProgress * 100}%` }}
+                            className="h-full w-full origin-left bg-[var(--text-primary)] transition-transform duration-150 ease-out"
+                            style={{ transform: `scaleX(${chapterScrollProgress})` }}
                           />
                         )}
                       </div>
@@ -1883,12 +1963,12 @@ export const App: React.FC = () => {
                 ) : (
                   // Single chapter smooth fill
                   <div
-                    className={`h-full rounded-full transition-all duration-150 ease-out ${
+                    className={`h-full w-full origin-left rounded-full transition-transform duration-150 ease-out ${
                       planReadingSession.isDayFinished
                         ? 'bg-emerald-600 dark:bg-emerald-400'
                         : 'bg-[var(--text-primary)]'
                     }`}
-                    style={{ width: `${planReadingProgressPercent}%` }}
+                    style={{ transform: `scaleX(${Math.max(0, Math.min(1, planReadingProgressPercent / 100))})` }}
                   />
                 )}
               </div>
@@ -1947,12 +2027,12 @@ export const App: React.FC = () => {
             className="absolute bottom-0 left-0 right-0 h-[3px] bg-[var(--text-primary)]/15 overflow-hidden"
           >
             <div
-              className={`h-full transition-all duration-150 ease-out ${
+              className={`h-full w-full origin-left transition-transform duration-150 ease-out ${
                 planReadingSession.isDayFinished
                   ? 'bg-emerald-600 dark:bg-emerald-400'
                   : 'bg-[var(--text-primary)]'
               }`}
-              style={{ width: `${planReadingProgressPercent}%` }}
+              style={{ transform: `scaleX(${Math.max(0, Math.min(1, planReadingProgressPercent / 100))})` }}
             />
           </div>
             </div>
@@ -1983,7 +2063,7 @@ export const App: React.FC = () => {
             />
           ) : (
             <div className="flex flex-col w-full pb-32 animate-fade-in">
-              {chapterData.verses.map((v) => {
+              {displayedVerses.map((v) => {
                 const note = notesByVerse.get(v.verse);
                 const hasNote = Boolean(note && note.content && note.content.trim().length > 0);
                 const verseKey = `${position.bookId}:${position.chapter}:${v.verse}`;
@@ -2028,7 +2108,9 @@ export const App: React.FC = () => {
 
                   <div className={`text-center hidden sm:flex flex-col items-center ${readerFontFamilyClass}`}>
                     <span className="text-sm font-medium text-[var(--text-primary)]">
-                      {chapterData.bookName} {chapterData.chapter}
+                      {activePlanAssignedChapter
+                        ? formatAssignedChapterLabel(activePlanAssignedChapter)
+                        : `${chapterData.bookName} ${chapterData.chapter}`}
                     </span>
                     <span className="text-[11px] font-sans text-[var(--text-subtle)]">
                       Day {planReadingSession.dayNumber} · Chapter {planReadingSession.currentChapterIndex + 1} of{' '}
@@ -2129,8 +2211,9 @@ export const App: React.FC = () => {
       )}
 
       {/* Viewport-Anchored Navigation Dock & Action Button on Tablet/Mobile in Notes; Centered otherwise */}
-      <div className="fixed bottom-4 sm:bottom-6 inset-x-0 z-50 flex items-center justify-between lg:justify-center pointer-events-none select-none px-4 sm:px-6 md:px-8">
-        {/* Navigation Dock Wrapper (Smoothly animates between center and left edge on tablet & mobile) */}
+      <div className="fixed bottom-4 sm:bottom-6 inset-x-0 z-50 flex items-center justify-center pointer-events-none select-none px-4 sm:px-6 md:px-8">
+        <div className="relative flex items-center justify-between md:justify-start w-full lg:w-auto">
+        {/* Navigation Dock Wrapper (Smoothly glides via pure compositor transform) */}
         <div
           className={`relative dock-nav-transition dock-nav-animated flex-1 min-w-0 md:flex-none md:shrink-0 ${
             currentView === 'notes' ? 'dock-anchored-left' : 'dock-centered'
@@ -2144,8 +2227,8 @@ export const App: React.FC = () => {
               ? planReadingSession.currentChapterIndex > 0
                 ? {
                     onClick: () => handleNavigatePlanChapter('prev'),
-                    title: `Previous: ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1]?.bookName} ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1]?.chapter}`,
-                    ariaLabel: `Previous chapter (${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1]?.bookName} ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1]?.chapter})`,
+                    title: `Previous: ${formatAssignedChapterLabel(planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1])}`,
+                    ariaLabel: `Previous reading (${formatAssignedChapterLabel(planReadingSession.assignedChapters[planReadingSession.currentChapterIndex - 1])})`,
                   }
                 : null
               : prevChapterTarget
@@ -2160,8 +2243,8 @@ export const App: React.FC = () => {
               ? planReadingSession.currentChapterIndex < planReadingSession.assignedChapters.length - 1
                 ? {
                     onClick: () => handleNavigatePlanChapter('next'),
-                    title: `Next: ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1]?.bookName} ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1]?.chapter}`,
-                    ariaLabel: `Next chapter (${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1]?.bookName} ${planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1]?.chapter})`,
+                    title: `Next: ${formatAssignedChapterLabel(planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1])}`,
+                    ariaLabel: `Next reading (${formatAssignedChapterLabel(planReadingSession.assignedChapters[planReadingSession.currentChapterIndex + 1])})`,
                   }
                 : null
               : nextChapterTarget
@@ -2189,7 +2272,7 @@ export const App: React.FC = () => {
                       aria-label={prevChapterBtn.ariaLabel}
                       className={`${
                         canShowChapterArrows ? 'pointer-events-auto' : 'pointer-events-none'
-                      } w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm flex items-center justify-center text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)] hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer group`}
+                      } w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm flex items-center justify-center text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)] hover:scale-105 active:scale-95 transition-[transform,background-color,color,border-color] duration-200 cursor-pointer group`}
                     >
                       <svg
                         className="w-5 h-5 transition-transform group-hover:-translate-x-0.5"
@@ -2218,7 +2301,7 @@ export const App: React.FC = () => {
                       aria-label={nextChapterBtn.ariaLabel}
                       className={`${
                         canShowChapterArrows ? 'pointer-events-auto' : 'pointer-events-none'
-                      } w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm flex items-center justify-center text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)] hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer group`}
+                      } w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm flex items-center justify-center text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)] hover:scale-105 active:scale-95 transition-[transform,background-color,color,border-color] duration-200 cursor-pointer group`}
                     >
                       <svg
                         className="w-5 h-5 transition-transform group-hover:translate-x-0.5"
@@ -2389,12 +2472,12 @@ export const App: React.FC = () => {
           </nav>
         </div>
 
-        {/* Animated Add Note Button (Anchored to right on tablet & mobile, attached to dock on desktop) */}
+        {/* Animated Add Note Button (Pure transform + opacity on tablet & desktop; zero width/margin animation) */}
         <div
-          className={`dock-action-wrapper overflow-visible flex items-center justify-center shrink-0 ${
+          className={`dock-action-wrapper overflow-visible flex items-center justify-center shrink-0 md:absolute md:inset-y-0 md:right-0 md:w-16 md:ml-0 lg:right-auto lg:left-full lg:ml-4 ${
             currentView === 'notes'
-              ? 'w-16 ml-3 md:ml-0 lg:ml-3 sm:lg:ml-4 opacity-100 scale-100 translate-x-0 pointer-events-auto'
-              : 'w-0 ml-0 opacity-0 scale-50 translate-x-3 pointer-events-none'
+              ? 'is-open w-16 ml-3'
+              : 'is-closed w-0 ml-0'
           }`}
           aria-hidden={currentView !== 'notes'}
         >
@@ -2405,7 +2488,7 @@ export const App: React.FC = () => {
               setIsComposingPlainNote((prev) => !prev);
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`w-16 h-16 shrink-0 rounded-full border shadow-sm flex items-center justify-center transition-all duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`w-16 h-16 shrink-0 rounded-full border shadow-sm flex items-center justify-center transition-[transform,background-color,color,border-color] duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
               isComposingPlainNote
                 ? 'bg-[var(--text-primary)] text-[var(--bg-app)] border-[var(--text-primary)] shadow-md'
                 : 'border-[var(--line-subtle)] bg-[var(--bg-app)] text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)]'
@@ -2429,6 +2512,7 @@ export const App: React.FC = () => {
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
           </button>
+        </div>
         </div>
       </div>
 

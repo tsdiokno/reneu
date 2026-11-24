@@ -235,29 +235,42 @@
       // Fallback safeguard: Never allow splash to freeze the user indefinitely
       (function() {
         var splash = document.getElementById('pwa-splash');
-        if (!splash) return;
-
         function cleanupSplashActive() {
           document.body.classList.remove('splash-active');
           document.documentElement.classList.remove('splash-active');
         }
-        
+        if (!splash) {
+          cleanupSplashActive();
+          return;
+        }
+
+        function dismissAndRemove(el) {
+          if (!el) {
+            cleanupSplashActive();
+            return;
+          }
+          el.classList.add('splash-dismissed');
+          cleanupSplashActive();
+          setTimeout(function() {
+            cleanupSplashActive();
+            if (el.parentNode) el.parentNode.removeChild(el);
+          }, 400);
+        }
+
         // Allow clicking the splash screen to dismiss at any time
         splash.addEventListener('click', function() {
-          splash.classList.add('splash-dismissed');
-          cleanupSplashActive();
-          setTimeout(function() { if (splash.parentNode) splash.parentNode.removeChild(splash); }, 400);
+          dismissAndRemove(splash);
         });
 
         // 3.5s maximum fallback unless explicit ?splash=true
         if (window.location.search.indexOf('splash=') === -1) {
           setTimeout(function() {
             var el = document.getElementById('pwa-splash');
-            if (el && !el.classList.contains('splash-dismissed')) {
-              el.classList.add('splash-dismissed');
+            if (!el || el.classList.contains('splash-dismissed')) {
               cleanupSplashActive();
-              setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 400);
+              return;
             }
+            dismissAndRemove(el);
           }, 3500);
         }
       })();

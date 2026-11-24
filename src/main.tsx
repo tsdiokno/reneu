@@ -7,6 +7,21 @@ import { registerSW } from 'virtual:pwa-register';
 // Register service worker in production environments
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator && import.meta.env.PROD) {
   try {
+    const hadControllerAtBoot = Boolean(navigator.serviceWorker.controller);
+    let hasReloadedForUpdate = false;
+
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (
+        hadControllerAtBoot &&
+        !hasReloadedForUpdate &&
+        typeof performance !== 'undefined' &&
+        performance.now() < 15000
+      ) {
+        hasReloadedForUpdate = true;
+        window.location.reload();
+      }
+    });
+
     const updateSW = registerSW({
       immediate: true,
       onNeedRefresh() {

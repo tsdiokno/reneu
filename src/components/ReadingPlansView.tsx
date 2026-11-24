@@ -13,8 +13,9 @@ import {
   CLASSICAL_PRESETS,
   type PlanPresetDefinition,
 } from '../services/readingPlanEngine';
-import { CANONICAL_BOOKS } from '../data/canonicalBooks';
+import { CANONICAL_BOOKS, STANDARD_BOOK_ABBREVIATIONS } from '../data/canonicalBooks';
 import { DropdownSelect, type DropdownSelectOption } from './DropdownSelect';
+import { MultiSelectDropdown, type MultiSelectOption } from './MultiSelectDropdown';
 import {
   getAllReadingPlans,
   getActiveReadingPlan,
@@ -112,7 +113,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
   // Plan Configuration State (4 Core Variables + Custom user-definable options)
   const [customTitle, setCustomTitle] = useState<string>('My Reading Plan');
   const [customScope, setCustomScope] = useState<PlanScope>('entire-bible');
-  const [customBookIds, setCustomBookIds] = useState<number[]>([40, 41, 42, 43]); // Default 4 Gospels when custom scope is first picked
+  const [customBookIds, setCustomBookIds] = useState<number[]>([]);
   const [customDurationChoice, setCustomDurationChoice] = useState<string>('365');
   const [customDurationInput, setCustomDurationInput] = useState<number>(365);
   const [customDaysPerWeek, setCustomDaysPerWeek] = useState<PlanDaysPerWeek>(7);
@@ -201,7 +202,8 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
       activePlan.durationDays,
       activePlan.daysPerWeek,
       activePlan.trackStyle,
-      activePlan.customBookIds
+      activePlan.customBookIds,
+      { granularity: activePlan.isPreset ? 'chapter' : 'verse' }
     );
   }, [activePlan]);
 
@@ -317,7 +319,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
     } else {
       const portion = currentSchedule.readings[targetPortionIndex] || currentSchedule.readings[0];
       if (portion) {
-        onNavigate(portion.bookId, portion.startChapter);
+        onNavigate(portion.bookId, portion.startChapter, portion.startVerse);
       }
     }
   };
@@ -372,6 +374,9 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
 
   // Create Custom Plan
   const handleCreateCustom = async () => {
+    if (customScope === 'custom-books' && customBookIds.length === 0) {
+      return;
+    }
     const newPlan = await createCustomPlan({
       title: customTitle.trim() || 'My Reading Plan',
       scope: customScope,
@@ -382,6 +387,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
       setAsActive: true,
     });
     setActivePlanState(newPlan);
+    setCustomBookIds([]);
     await loadPlans();
     setIsNewPlanModalOpen(false);
   };
@@ -506,21 +512,21 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
         setCustomBookIds(CANONICAL_BOOKS.filter((b) => b.section === 'Poetry').map((b) => b.id));
         break;
       case 'clear':
-        setCustomBookIds([1]); // keep at least 1 book
+        setCustomBookIds([]);
         break;
     }
   };
 
-  const handleToggleBook = (bookId: number) => {
-    setCustomBookIds((prev) => {
-      if (prev.includes(bookId)) {
-        if (prev.length <= 1) return prev; // keep at least 1 book
-        return prev.filter((id) => id !== bookId);
-      } else {
-        return [...prev, bookId].sort((a, b) => a - b);
-      }
-    });
-  };
+  const customBookDropdownOptions: MultiSelectOption<number>[] = useMemo(
+    () =>
+      CANONICAL_BOOKS.map((b) => ({
+        value: b.id,
+        label: b.name,
+        meta: `${b.chapterCount} ch`,
+        keywords: `${b.code} ${STANDARD_BOOK_ABBREVIATIONS[b.id] || ''} ${b.testament} ${b.section}`,
+      })),
+    []
+  );
 
   return (
     <div className="w-full min-h-screen selection:bg-[var(--text-selection)] animate-fade-in pb-36 font-sans select-none">
@@ -1107,7 +1113,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
                     Custom Books Selection
                   </span>
                   <span className="text-[11px] text-[var(--text-subtle)]">
-                    {customBookIds.length} of {CANONICAL_BOOKS.length} books selected ({customPacingPreview.totalChapters} chapters)
+                    {customBookIds.length} of {CANONICAL_BOOKS.length} books selected ({customPacingPreview.totalChapters} chapters · {customPacingPreview.totalVerses.toLocaleString()} verses)
                   </span>
                 </div>
 
@@ -1165,37 +1171,42 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
                 </div>
               </div>
 
-              {/* Scrollable Book Grid with Checkboxes */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5 max-h-48 overflow-y-auto pr-1">
-                {CANONICAL_BOOKS.map((b) => {
-                  const isSelected = customBookIds.includes(b.id);
-                  return (
-                    <label
-                      key={b.id}
-                      className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs cursor-pointer select-none transition-colors ${
-                        isSelected
-                          ? 'bg-[var(--text-primary)]/10 text-[var(--text-primary)] font-medium'
-                          : 'text-[var(--text-subtle)] hover:bg-[var(--text-primary)]/5'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => handleToggleBook(b.id)}
-                        className="rounded border-[var(--line-subtle)] text-[var(--text-primary)] cursor-pointer"
-                      />
-                      <span className="truncate flex-1">{b.name}</span>
-                      <span className="text-[10px] opacity-60 font-sans tabular-nums shrink-0">
-                        {b.chapterCount}
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
+              {/* Searchable Multiselect Books Dropdown */}
+              <MultiSelectDropdown
+                values={customBookIds}
+                options={customBookDropdownOptions}
+                onChange={setCustomBookIds}
+                placeholder="Select books…"
+                searchPlaceholder="Search books (e.g. Psalms, Rom, NT, Gospels)…"
+                emptyText="No Bible books match your search."
+                ariaLabel="Select books for custom reading plan"
+              />
             </div>
           )}
 
-          <div className="pt-2 flex justify-end gap-2">
+          {selectedPlanOption === 'custom' && customPacingPreview.totalVerses > 0 && (
+            <div className="px-3 py-2 rounded-lg border border-[var(--line-subtle)] bg-[var(--bg-surface)]/50 text-[11px] text-[var(--text-subtle)] flex flex-wrap items-center justify-between gap-2">
+              <span>
+                ~{customPacingPreview.averageVersesPerDay} {customPacingPreview.averageVersesPerDay === 1 ? 'verse' : 'verses'}/day across{' '}
+                {customPacingPreview.activeDaysCount} reading {customPacingPreview.activeDaysCount === 1 ? 'day' : 'days'}
+              </span>
+              <span className="tabular-nums">
+                {customPacingPreview.totalVerses.toLocaleString()} total verses
+              </span>
+              {customPacingPreview.activeDaysCount > customPacingPreview.totalVerses && (
+                <span className="w-full text-[11px] text-[var(--text-subtle)] opacity-80">
+                  Duration exceeds total verses; some single verses will repeat.
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="pt-2 flex items-center justify-end gap-2">
+            {selectedPlanOption === 'custom' && customScope === 'custom-books' && customBookIds.length === 0 && (
+              <span className="text-[11px] text-[var(--text-subtle)] mr-auto">
+                Select at least 1 book to create this plan.
+              </span>
+            )}
             <button
               type="button"
               onClick={() => setIsNewPlanModalOpen(false)}
@@ -1205,6 +1216,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
             </button>
             <button
               type="button"
+              disabled={selectedPlanOption === 'custom' && customScope === 'custom-books' && customBookIds.length === 0}
               onClick={() => {
                 if (selectedPlanOption === 'custom') {
                   void handleCreateCustom();
@@ -1212,7 +1224,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
                   void handleStartPreset(selectedPlanOption as NonNullable<ReadingPlan['presetKey']>);
                 }
               }}
-              className="px-5 py-2 rounded-full bg-[var(--text-primary)] text-[var(--bg-app)] text-xs font-semibold hover:opacity-90 active:scale-95 transition-all cursor-pointer shadow-sm"
+              className="px-5 py-2 rounded-full bg-[var(--text-primary)] text-[var(--bg-app)] text-xs font-semibold hover:opacity-90 active:scale-95 transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
             >
               {selectedPlanOption === 'custom' ? 'Create & Start Plan' : 'Start Plan'}
             </button>

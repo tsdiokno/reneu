@@ -11,13 +11,18 @@ export type PlanDaysPerWeek = 7 | 6 | 5 | 4 | 3 | 2 | 1;
 
 export type PlanTrackStyle = 'canonical' | 'multi-track' | 'mcheyne' | 'chronological';
 
+export type PlanDivisionGranularity = 'chapter' | 'verse';
+
 export interface PlanReadingPortion {
   trackName: string; // e.g. "Old Testament", "New Testament", "Psalms & Wisdom", "Family", "Secret"
   bookId: number;
   bookName: string;
   startChapter: number;
   endChapter: number;
-  displayRef: string; // e.g. "Genesis 1–3" or "Matthew 1"
+  startVerse?: number; // 1-indexed inclusive start verse in startChapter
+  endVerse?: number; // 1-indexed inclusive end verse in endChapter
+  verseCount?: number; // total verses covered by this portion
+  displayRef: string; // e.g. "Genesis 1–3" or "1 Thessalonians 1:1–2:2"
 }
 
 export interface PlanDaySchedule {
@@ -49,9 +54,11 @@ export interface ReadingPlan {
 
 export interface PlanPacingSummary {
   totalChapters: number;
+  totalVerses: number;
   activeDaysCount: number;
   restDaysCount: number;
   averageChaptersPerDay: number;
+  averageVersesPerDay: number;
   trackCount: number;
 }
 
@@ -59,6 +66,8 @@ export interface PlanAssignedChapter {
   bookId: number;
   bookName: string;
   chapter: number;
+  startVerse?: number;
+  endVerse?: number;
   portionIndex: number;
   displayRef: string;
   trackName: string;
