@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import React, { useRef, useCallback, useEffect, useMemo } from 'react';
 import type { VerseToken } from '../types/bible';
 import { NoteField } from './NoteField';
 import { sanitizeVerseHtml } from '../utils/sanitizeHtml';
@@ -45,7 +45,9 @@ export const VerseRow: React.FC<VerseRowProps> = React.memo(({
   const isLongPressRef = useRef<boolean>(false);
   const isTouchingRef = useRef<boolean>(false);
 
-  const [hasMounted, setHasMounted] = useState<boolean>(false);
+  const wasInitiallyOpenRef = useRef<boolean>(isNoteActive);
+  const suppressInitialTransition = wasInitiallyOpenRef.current && isNoteActive;
+  const selectionListenerAttachedRef = useRef<boolean>(false);
 
   // Memoize sanitized HTML for security (XSS prevention) and performance (no re-parsing on unrelated renders)
   const sanitizedHtml = useMemo(
@@ -53,14 +55,11 @@ export const VerseRow: React.FC<VerseRowProps> = React.memo(({
     [verse.text]
   );
 
+  // Clear initial no-transition flag after mount without triggering a re-render of every verse
   useEffect(() => {
-    setHasMounted(true);
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
-    };
+    if (wasInitiallyOpenRef.current) {
+      wasInitiallyOpenRef.current = false;
+    }
   }, []);
 
   // Programmatically pre-selects the entire verse text block as an atomic unit
@@ -76,30 +75,37 @@ export const VerseRow: React.FC<VerseRowProps> = React.memo(({
     } catch {}
   }, []);
 
-  // Intercept any mobile browser attempts to highlight individual words during long-press touch
-  useEffect(() => {
-    const handleSelectionChange = () => {
-      if (!isTouchingRef.current || !textRef.current) return;
-      const selection = window.getSelection();
-      if (!selection || selection.rangeCount === 0) return;
-      const range = selection.getRangeAt(0);
-      // If the selection is inside this verse text, enforce whole-verse selection only
-      if (textRef.current.contains(range.commonAncestorContainer)) {
-        const fullText = textRef.current.textContent?.trim() || '';
-        const selectedText = selection.toString().trim();
-        // If the browser selected an individual word instead of the whole verse, expand immediately
-        if (selectedText.length > 0 && selectedText !== fullText) {
-          selectVerseText();
-          isLongPressRef.current = true;
-        }
+  // Intercept any mobile browser attempts to highlight individual words during active long-press touch
+  const handleSelectionChange = useCallback(() => {
+    if (!isTouchingRef.current || !textRef.current) return;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    // If the selection is inside this verse text, enforce whole-verse selection only
+    if (textRef.current.contains(range.commonAncestorContainer)) {
+      const fullText = textRef.current.textContent?.trim() || '';
+      const selectedText = selection.toString().trim();
+      // If the browser selected an individual word instead of the whole verse, expand immediately
+      if (selectedText.length > 0 && selectedText !== fullText) {
+        selectVerseText();
+        isLongPressRef.current = true;
       }
-    };
-
-    document.addEventListener('selectionchange', handleSelectionChange);
-    return () => {
-      document.removeEventListener('selectionchange', handleSelectionChange);
-    };
+    }
   }, [selectVerseText]);
+
+  const detachSelectionGuard = useCallback(() => {
+    if (selectionListenerAttachedRef.current) {
+      document.removeEventListener('selectionchange', handleSelectionChange);
+      selectionListenerAttachedRef.current = false;
+    }
+  }, [handleSelectionChange]);
+
+  useEffect(() => {
+    return () => {
+      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+      detachSelectionGuard();
+    };
+  }, [detachSelectionGuard]);
 
   const handleMouseDown = (e: React.MouseEvent<HTMLSpanElement>) => {
     if (e.button === 0) {
@@ -128,6 +134,10 @@ export const VerseRow: React.FC<VerseRowProps> = React.memo(({
     touchStartPos.current = { x: touch.clientX, y: touch.clientY };
     isLongPressRef.current = false;
     isTouchingRef.current = true;
+    if (!selectionListenerAttachedRef.current) {
+      document.addEventListener('selectionchange', handleSelectionChange);
+      selectionListenerAttachedRef.current = true;
+    }
 
     if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
     // Early long press trigger (300ms) to preempt mobile browser individual word selection
@@ -145,12 +155,14 @@ export const VerseRow: React.FC<VerseRowProps> = React.memo(({
     // Cancel long press if user drags or scrolls
     if (dx > 8 || dy > 8) {
       isTouchingRef.current = false;
+      detachSelectionGuard();
       if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
     }
   };
 
   const handleTouchEnd = () => {
     isTouchingRef.current = false;
+    detachSelectionGuard();
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
     }
@@ -220,6 +232,7 @@ export const VerseRow: React.FC<VerseRowProps> = React.memo(({
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
+          onTouchCancel={handleTouchEnd}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
@@ -243,7 +256,7 @@ export const VerseRow: React.FC<VerseRowProps> = React.memo(({
         <div
           className={`verse-accordion-grid ${
             isNoteActive ? 'is-open' : 'is-collapsed'
-          } ${!hasMounted ? 'no-transition' : ''}`}
+          } ${suppressInitialTransition ? 'no-transition' : ''}`}
           onClick={(e) => e.stopPropagation()}
           aria-hidden={!isNoteActive}
         >

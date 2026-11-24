@@ -360,6 +360,26 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  // Idle-prefetch lazy view chunks after initialization so first tab switch to/from Notes has zero chunk-load stutter
+  useEffect(() => {
+    if (!appInitialized) return;
+    const prefetch = () => {
+      void import('./components/AllNotesView');
+      void import('./components/ReadingPlansView');
+      void import('./components/SettingsView');
+    };
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (typeof w.requestIdleCallback === 'function') {
+      const id = w.requestIdleCallback(prefetch, { timeout: 1500 });
+      return () => w.cancelIdleCallback?.(id);
+    }
+    const timer = window.setTimeout(prefetch, 400);
+    return () => window.clearTimeout(timer);
+  }, [appInitialized]);
+
   // Sync Theme with DOM and Meta theme-color (hardened for iOS Safari extended top bar)
   useEffect(() => {
     const themeColors: Record<ThemeMode, string> = {
@@ -2210,13 +2230,15 @@ export const App: React.FC = () => {
         </Suspense>
       )}
 
-      {/* Viewport-Anchored Navigation Dock & Action Button on Tablet/Mobile in Notes; Centered otherwise */}
+      {/* Full-width dock on mobile when not in Notes; room for Add Note button in Notes; compact centered/anchored on tablet+ */}
       <div className="fixed bottom-4 sm:bottom-6 inset-x-0 z-50 flex items-center justify-center pointer-events-none select-none px-4 sm:px-6 md:px-8">
         <div className="relative flex items-center justify-between md:justify-start w-full lg:w-auto">
-        {/* Navigation Dock Wrapper (Smoothly glides via pure compositor transform) */}
+        {/* Navigation Dock Wrapper */}
         <div
-          className={`relative dock-nav-transition dock-nav-animated flex-1 min-w-0 md:flex-none md:shrink-0 ${
-            currentView === 'notes' ? 'dock-anchored-left' : 'dock-centered'
+          className={`relative dock-nav-transition dock-nav-animated md:w-auto shrink-0 ${
+            currentView === 'notes'
+              ? 'w-[calc(100%-4.75rem)] dock-anchored-left'
+              : 'w-full dock-centered'
           }`}
         >
           {/* Floating Previous / Next Chapter Circular Buttons: stay visible at any scroll state in Reader view */}
@@ -2326,14 +2348,14 @@ export const App: React.FC = () => {
           <nav
             aria-label="App navigation"
             aria-hidden={currentView === 'reader' && !isReaderOmnibarVisible}
-            style={{ '--dock-active': activeDockIndex } as React.CSSProperties}
+            data-active-tab={activeDockIndex}
             className={`relative w-full pointer-events-auto font-sans h-16 p-1.5 flex items-center gap-[var(--dock-gap)] rounded-full dock-bottom-chrome ${
               currentView === 'reader' && !isReaderOmnibarVisible ? 'is-dock-hidden' : ''
             }`}
           >
-          {/* Isolated backdrop layer prevents Chromium backdrop-filter flattening child transitions */}
+          {/* Isolated GPU-promoted backdrop layer prevents backdrop-filter flattening child pill transitions */}
           <div
-            className="pointer-events-none absolute inset-0 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm"
+            className="pointer-events-none absolute inset-0 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm [transform:translateZ(0)]"
             aria-hidden="true"
           />
           {/* Active Background Indicator Track (pure compositor CSS transform transition glides cleanly across viewports) */}
@@ -2472,12 +2494,10 @@ export const App: React.FC = () => {
           </nav>
         </div>
 
-        {/* Animated Add Note Button (Smooth width/margin + transform on mobile; pure transform + opacity on tablet & desktop) */}
+        {/* Animated Add Note Button (Pure compositor transform + opacity across all viewports) */}
         <div
-          className={`dock-action-wrapper overflow-visible flex items-center justify-center shrink-0 md:absolute md:inset-y-0 md:right-0 md:w-16 md:ml-0 lg:right-auto lg:left-full lg:ml-4 ${
-            currentView === 'notes'
-              ? 'is-open w-16 ml-3'
-              : 'is-closed w-0 ml-0'
+          className={`dock-action-wrapper overflow-visible flex items-center justify-center shrink-0 absolute inset-y-0 right-0 w-16 ml-0 lg:right-auto lg:left-full lg:ml-4 ${
+            currentView === 'notes' ? 'is-open' : 'is-closed'
           }`}
           aria-hidden={currentView !== 'notes'}
         >

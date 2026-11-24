@@ -21,9 +21,22 @@ const ALLOWED_TAGS = new Set([
 
 const ALLOWED_ATTRIBUTES = new Set(['class', 'title', 'aria-hidden']);
 
+const MAX_SANITIZE_CACHE_SIZE = 600;
+const sanitizeCache = new Map<string, string>();
+
 export function sanitizeVerseHtml(rawHtml: string): string {
   if (!rawHtml || typeof rawHtml !== 'string') {
     return '';
+  }
+
+  // Fast path: plain text without tags needs no HTML parsing
+  if (!rawHtml.includes('<')) {
+    return rawHtml;
+  }
+
+  const cached = sanitizeCache.get(rawHtml);
+  if (cached !== undefined) {
+    return cached;
   }
 
   // Fallback for SSR or environments without DOMParser
@@ -71,7 +84,12 @@ export function sanitizeVerseHtml(rawHtml: string): string {
     }
 
     cleanNode(doc.body);
-    return doc.body.innerHTML;
+    const sanitized = doc.body.innerHTML;
+    if (sanitizeCache.size >= MAX_SANITIZE_CACHE_SIZE) {
+      sanitizeCache.clear();
+    }
+    sanitizeCache.set(rawHtml, sanitized);
+    return sanitized;
   } catch {
     // If parsing fails for any reason, strip all tags safely
     return rawHtml.replace(/<[^>]*>?/gm, '');

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useDeferredValue } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useDeferredValue, startTransition } from 'react';
 import {
   getAllNotes,
   addOrUpdateNote,
@@ -247,7 +247,9 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
   useLayoutEffect(() => {
     if (isLoading || hasInitializedScrollRef.current) return;
     hasInitializedScrollRef.current = true;
-    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    if (window.scrollY > 0) {
+      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    }
   }, [isLoading]);
 
   const {
@@ -639,7 +641,10 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
       }
 
       if (mounted) {
-        setAllNotes(availableNotes);
+        startTransition(() => {
+          setAllNotes(availableNotes);
+          setIsLoading(false);
+        });
       }
 
       const initialProfile = await getUserProfile();
@@ -658,7 +663,7 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
         );
       }
     })
-      .finally(() => {
+      .catch(() => {
         if (mounted) {
           setIsLoading(false);
         }

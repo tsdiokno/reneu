@@ -407,9 +407,10 @@ a:focus-visible,
   scrollbar-width: none;
 }
 
-/* Dock & Floating Action Button Motion Transitions (Transform & Opacity Only) */
+/* Dock & Floating Action Button Motion Transitions */
 .dock-nav-transition {
-  transition: transform 450ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 450ms cubic-bezier(0.16, 1, 0.3, 1),
+              width 360ms cubic-bezier(0.16, 1, 0.3, 1);
   backface-visibility: hidden;
   will-change: transform;
 }
@@ -425,16 +426,37 @@ a:focus-visible,
   }
 }
 
+.dock-indicator-track {
+  contain: layout style;
+}
+
 .dock-indicator-pill {
   left: 0;
   width: calc((100% - 3 * var(--dock-gap)) / 4);
-  transform: translate3d(calc(var(--dock-active, 0) * 100% + var(--dock-active, 0) * var(--dock-gap)), 0, 0);
+  transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
   will-change: transform;
   transition: transform 340ms cubic-bezier(0.16, 1, 0.3, 1);
+  contain: layout style;
 }
 
-/* On mobile (< 768px), tab bar fills available width from the left edge */
+[data-active-tab="0"] .dock-indicator-pill {
+  transform: translate3d(0, 0, 0);
+}
+
+[data-active-tab="1"] .dock-indicator-pill {
+  transform: translate3d(calc(100% + var(--dock-gap)), 0, 0);
+}
+
+[data-active-tab="2"] .dock-indicator-pill {
+  transform: translate3d(calc(200% + 2 * var(--dock-gap)), 0, 0);
+}
+
+[data-active-tab="3"] .dock-indicator-pill {
+  transform: translate3d(calc(300% + 3 * var(--dock-gap)), 0, 0);
+}
+
+/* On mobile (< 768px), dock spans full width when not in Notes */
 .dock-nav-animated.dock-centered {
   transform: translate3d(0, 0, 0);
 }
@@ -446,7 +468,7 @@ a:focus-visible,
   }
 }
 
-/* On desktop (>= 1024px), centered dock shifts slightly left in Notes to balance action button */
+/* On desktop (>= 1024px), centered dock sits naturally centered inside lg:w-auto */
 @media (min-width: 1024px) {
   .dock-nav-animated.dock-centered {
     transform: translate3d(0, 0, 0);
@@ -468,15 +490,6 @@ a:focus-visible,
   will-change: transform, opacity;
   transition: opacity 260ms cubic-bezier(0.16, 1, 0.3, 1),
               transform 360ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@media (max-width: 767px) {
-  .dock-action-wrapper {
-    transition: width 360ms cubic-bezier(0.16, 1, 0.3, 1),
-                margin-left 360ms cubic-bezier(0.16, 1, 0.3, 1),
-                opacity 260ms cubic-bezier(0.16, 1, 0.3, 1),
-                transform 360ms cubic-bezier(0.16, 1, 0.3, 1);
-  }
 }
 
 .dock-action-wrapper.is-open {
