@@ -2472,7 +2472,7 @@ export const App: React.FC = () => {
           </nav>
         </div>
 
-        {/* Animated Add Note Button (Pure transform + opacity on tablet & desktop; zero width/margin animation) */}
+        {/* Animated Add Note Button (Smooth width/margin + transform on mobile; pure transform + opacity on tablet & desktop) */}
         <div
           className={`dock-action-wrapper overflow-visible flex items-center justify-center shrink-0 md:absolute md:inset-y-0 md:right-0 md:w-16 md:ml-0 lg:right-auto lg:left-full lg:ml-4 ${
             currentView === 'notes'
