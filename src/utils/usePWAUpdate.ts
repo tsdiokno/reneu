@@ -220,8 +220,13 @@ export function usePWAUpdate(): PWAUpdateInfo {
     setUpdateStatus('checking');
 
     try {
+      const customWindow = window as unknown as {
+        __pwaUpdateSW?: (reload?: boolean) => Promise<void>;
+        __pwaApplyUpdateRequested?: boolean;
+      };
+      customWindow.__pwaApplyUpdateRequested = true;
+
       // 1. If vite-plugin-pwa registered helper exists, call it
-      const customWindow = window as unknown as { __pwaUpdateSW?: (reload?: boolean) => Promise<void> };
       if (typeof customWindow.__pwaUpdateSW === 'function') {
         await customWindow.__pwaUpdateSW(true);
         return;

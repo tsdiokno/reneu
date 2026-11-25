@@ -531,7 +531,7 @@ export const ReadingPlansView: React.FC<ReadingPlansViewProps> = ({
   return (
     <div className="w-full min-h-screen selection:bg-[var(--text-selection)] animate-fade-in pb-36 font-sans select-none">
       {/* Top Sticky Omnibar Header for Plans View */}
-      <header className="sticky top-0 z-40 bg-[var(--bg-omnibar)] backdrop-blur-md pt-4 sm:pt-5 pb-4 px-4 sm:px-8 transition-colors">
+      <header className="sticky top-0 z-40 bg-[var(--bg-omnibar)] backdrop-blur-xl border-b border-[var(--line-subtle)]/70 [box-shadow:var(--shadow-omnibar)] pt-4 sm:pt-5 pb-4 px-4 sm:px-8 transition-colors">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           <div className="flex-1 min-w-0 flex items-center py-1">
             {/* Trigger anchor with current plan title: invokes plan selection modal when clicked */}

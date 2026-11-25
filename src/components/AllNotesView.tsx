@@ -1036,18 +1036,14 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
       {/* Dynamic Main Top Sticky Header: hides on downward scroll, slides back down on upward scroll */}
       <header
         ref={notesHeaderRef}
-        className={`sticky top-0 z-40 omnibar-sticky-chrome pt-4 sm:pt-5 pb-4 px-4 sm:px-8 border-b ${
+        className={`sticky top-0 z-40 omnibar-sticky-chrome bg-[var(--bg-omnibar)] backdrop-blur-xl [box-shadow:var(--shadow-omnibar)] pt-4 sm:pt-5 pb-4 px-4 sm:px-8 border-b ${
           isNotesHeaderVisible ? 'pointer-events-auto' : 'is-omnibar-hidden pointer-events-none'
         } ${
           isNotesScrolledPastTop && isNotesHeaderVisible
-            ? 'border-[var(--line-subtle)]/70 shadow-sm'
-            : 'border-transparent'
+            ? 'border-[var(--line-subtle)]/70'
+            : 'border-[var(--line-subtle)]/40'
         }`}
       >
-        <div
-          className="pointer-events-none absolute inset-0 bg-[var(--bg-omnibar)] backdrop-blur-md -z-10"
-          aria-hidden="true"
-        />
         <div className="max-w-7xl mx-auto flex flex-col">
           {/* Search Row */}
           <div className="flex items-center gap-3 text-[var(--text-subtle)] focus-within:text-[var(--text-primary)] transition-colors py-1">

@@ -138,7 +138,7 @@ export const ReadingPlansViewSkeleton: React.FC<ReadingPlansViewSkeletonProps> =
       aria-label="Loading reading plans..."
     >
       {showHeader && (
-        <header className="sticky top-0 z-30 bg-[var(--bg-omnibar)] backdrop-blur-md pt-4 sm:pt-5 pb-4 px-4 sm:px-8 border-b border-[var(--line-subtle)] transition-colors animate-pulse">
+        <header className="sticky top-0 z-30 bg-[var(--bg-omnibar)] backdrop-blur-xl border-b border-[var(--line-subtle)]/70 [box-shadow:var(--shadow-omnibar)] pt-4 sm:pt-5 pb-4 px-4 sm:px-8 transition-colors animate-pulse">
           <div className="max-w-3xl mx-auto flex items-center justify-between gap-4">
             {/* Plan Title Skeleton */}
             <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">

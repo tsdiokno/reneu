@@ -123,7 +123,10 @@
     --bg-surface: #faf6f0;
     --bg-active: #eae1d3;
     --bg-input: #eee6db;
-    --bg-omnibar: rgba(245, 239, 235, 0.92);
+    --bg-omnibar: rgba(245, 239, 235, 0.78);
+    --bg-dock: rgba(250, 246, 240, 0.78);
+    --shadow-omnibar: 0 4px 20px -2px rgba(28, 25, 23, 0.08), 0 1px 4px 0 rgba(28, 25, 23, 0.05);
+    --shadow-dock: 0 10px 30px -4px rgba(28, 25, 23, 0.16), 0 4px 10px -2px rgba(28, 25, 23, 0.08);
 
     /* Typography & Contrast (WCAG AA/AAA compliant) */
     --text-primary: #1c1917;       /* 15.2:1 contrast against --bg-app (AAA) */
@@ -156,7 +159,10 @@
     --bg-surface: #f9fafb;
     --bg-active: #f3f4f6;
     --bg-input: #f3f4f6;
-    --bg-omnibar: rgba(255, 255, 255, 0.94);
+    --bg-omnibar: rgba(255, 255, 255, 0.80);
+    --bg-dock: rgba(255, 255, 255, 0.80);
+    --shadow-omnibar: 0 4px 20px -2px rgba(17, 24, 39, 0.07), 0 1px 4px 0 rgba(17, 24, 39, 0.04);
+    --shadow-dock: 0 10px 30px -4px rgba(17, 24, 39, 0.14), 0 4px 10px -2px rgba(17, 24, 39, 0.07);
 
     /* Typography & Contrast (WCAG AA/AAA compliant) */
     --text-primary: #111827;       /* 17.5:1 contrast against #ffffff (AAA) */
@@ -190,7 +196,10 @@
     --bg-surface: #18181c;
     --bg-active: #222228;
     --bg-input: #1e1e24;
-    --bg-omnibar: rgba(17, 17, 19, 0.92);
+    --bg-omnibar: rgba(17, 17, 19, 0.76);
+    --bg-dock: rgba(24, 24, 28, 0.78);
+    --shadow-omnibar: 0 6px 24px -2px rgba(0, 0, 0, 0.55), 0 2px 6px 0 rgba(0, 0, 0, 0.38);
+    --shadow-dock: 0 12px 32px -4px rgba(0, 0, 0, 0.72), 0 4px 12px -2px rgba(0, 0, 0, 0.5), inset 0 1px 0 0 rgba(255, 255, 255, 0.07);
 
     /* Typography & Contrast (WCAG AA/AAA compliant) */
     --text-primary: #f5f5f7;       /* 17.4:1 contrast against #111113 (AAA) */
@@ -411,8 +420,6 @@ a:focus-visible,
 .dock-nav-transition {
   transition: transform 450ms cubic-bezier(0.16, 1, 0.3, 1),
               width 360ms cubic-bezier(0.16, 1, 0.3, 1);
-  backface-visibility: hidden;
-  will-change: transform;
 }
 
 /* Fluid dock movement animation across viewports */
@@ -577,11 +584,6 @@ a:focus-visible,
   inset: 0;
   z-index: -10;
   pointer-events: none;
-  clip-path: inset(0 0 -16px 0);
-}
-
-.reader-omnibar-header.is-expanded.has-suggestions .reader-omnibar-backdrop-frame {
-  clip-path: none;
 }
 
 .reader-omnibar-backdrop {
@@ -590,13 +592,18 @@ a:focus-visible,
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
   will-change: transform, opacity;
-  transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1),
-              border-color 240ms ease,
-              opacity 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1) 0ms,
+              border-color 220ms ease 0ms,
+              box-shadow 220ms ease 0ms,
+              opacity 200ms cubic-bezier(0.16, 1, 0.3, 1) 0ms;
 }
 
 .reader-omnibar-header.is-compact .reader-omnibar-backdrop {
   transform: translate3d(0, calc(2.5rem - 100%), 0);
+  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1) 140ms,
+              border-color 220ms ease 140ms,
+              box-shadow 220ms ease 140ms,
+              opacity 200ms cubic-bezier(0.16, 1, 0.3, 1) 140ms;
 }
 
 @media (min-width: 640px) {
@@ -609,11 +616,12 @@ a:focus-visible,
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
   will-change: transform;
-  transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1) 0ms;
 }
 
 .reader-omnibar-header.is-compact ~ .reader-plan-bar {
   transform: translate3d(0, calc(2.5rem - var(--reader-omni-full-h, 4.75rem)), 0);
+  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1) 140ms;
 }
 
 @media (min-width: 640px) {
@@ -624,43 +632,40 @@ a:focus-visible,
 
 .reader-omnibar-full-layer {
   opacity: 1;
-  transform: translate3d(0, 0, 0) scale(1);
+  transform: translate3d(0, 0, 0);
   transform-origin: center top;
   will-change: transform, opacity;
-  transition: opacity 240ms cubic-bezier(0.16, 1, 0.3, 1) 60ms,
-              transform 280ms cubic-bezier(0.16, 1, 0.3, 1) 40ms;
+  transition: opacity 200ms cubic-bezier(0.16, 1, 0.3, 1) 140ms,
+              transform 240ms cubic-bezier(0.16, 1, 0.3, 1) 140ms;
 }
 
 .reader-omnibar-header.is-compact .reader-omnibar-full-layer {
   opacity: 0;
-  transform: translate3d(0, -10px, 0) scale(0.98);
+  transform: translate3d(0, -4px, 0);
   pointer-events: none;
-  transition: opacity 190ms cubic-bezier(0.4, 0, 1, 1) 0ms,
-              transform 220ms cubic-bezier(0.4, 0, 1, 1) 0ms;
+  transition: opacity 130ms cubic-bezier(0.22, 1, 0.36, 1) 0ms,
+              transform 130ms cubic-bezier(0.22, 1, 0.36, 1) 0ms;
 }
 
 .reader-omnibar-compact-layer {
   position: absolute;
   inset: 0 0 auto 0;
+  z-index: 1;
   height: 2.5rem;
   display: flex;
   align-items: center;
   justify-content: center;
   padding-inline: 1rem;
   opacity: 0;
-  transform: translate3d(0, 8px, 0) scale(0.96);
   pointer-events: none;
-  will-change: transform, opacity;
-  transition: opacity 160ms cubic-bezier(0.4, 0, 1, 1) 0ms,
-              transform 180ms cubic-bezier(0.4, 0, 1, 1) 0ms;
+  will-change: opacity;
+  transition: opacity 100ms cubic-bezier(0.4, 0, 1, 1) 0ms;
 }
 
 .reader-omnibar-header.is-compact .reader-omnibar-compact-layer {
   opacity: 1;
-  transform: translate3d(0, 0, 0) scale(1);
   pointer-events: auto;
-  transition: opacity 240ms cubic-bezier(0.16, 1, 0.3, 1) 80ms,
-              transform 280ms cubic-bezier(0.16, 1, 0.3, 1) 60ms;
+  transition: opacity 200ms cubic-bezier(0.16, 1, 0.3, 1) 160ms;
 }
 
 @media (min-width: 640px) {
@@ -668,6 +673,43 @@ a:focus-visible,
     height: 2.75rem;
     padding-inline: 2rem;
   }
+}
+
+.reader-omnibar-living-title {
+  position: absolute;
+  left: var(--omni-title-left, 0px);
+  top: var(--omni-title-top, 0px);
+  height: var(--omni-title-h, auto);
+  max-width: var(--omni-title-max-w, none);
+  z-index: 2;
+  opacity: 0;
+  transform-origin: center center;
+  transform: translate3d(0, 0, 0) scale(1);
+  backface-visibility: hidden;
+  -webkit-font-smoothing: antialiased;
+  will-change: transform, opacity;
+  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1) 0ms,
+              opacity 160ms cubic-bezier(0.16, 1, 0.3, 1) 0ms;
+}
+
+.reader-omnibar-header[data-title-ready="true"] .reader-omnibar-living-title {
+  opacity: 1;
+}
+
+.reader-omnibar-header.is-compact .reader-omnibar-living-title {
+  transform: translate3d(var(--omni-title-dx, 0px), var(--omni-title-dy, 0px), 0) scale(var(--omni-title-scale, 0.6));
+  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1) 140ms,
+              opacity 160ms cubic-bezier(0.16, 1, 0.3, 1) 0ms;
+}
+
+.reader-omnibar-header.is-compact .reader-omnibar-compact-layer:hover ~ .reader-omnibar-living-title {
+  opacity: 0.75;
+}
+
+.reader-omnibar-header .reader-omnibar-living-title.is-input-focused {
+  opacity: 0;
+  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1) 0ms,
+              opacity 0ms linear;
 }
 
 /* Auto-hiding Bottom Navigation Dock Chrome (Reader View) */
@@ -724,20 +766,23 @@ a:focus-visible,
 }
 
 /* Persistent Floating Reader Chapter Arrows: sit on top of dock ends, glide to bottom edge when dock hides */
-.reader-chapter-arrows {
+.reader-chapter-arrow-btn {
   transform: translate3d(0, 0, 0);
-  backface-visibility: hidden;
-  will-change: transform, opacity;
+  will-change: transform;
   transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1),
-              opacity 200ms cubic-bezier(0.16, 1, 0.3, 1);
+              opacity 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              scale 200ms ease,
+              background-color 200ms ease,
+              color 200ms ease,
+              border-color 200ms ease;
 }
 
-.reader-chapter-arrows.is-dock-hidden {
+.reader-chapter-arrow-btn.is-dock-hidden {
   transform: translate3d(0, 4.625rem, 0);
 }
 
 @media (min-width: 640px) {
-  .reader-chapter-arrows.is-dock-hidden {
+  .reader-chapter-arrow-btn.is-dock-hidden {
     transform: translate3d(0, 4.75rem, 0);
   }
 }
@@ -773,11 +818,12 @@ a:focus-visible,
   .omnibar-sticky-chrome,
   .reader-omnibar-full-layer,
   .reader-omnibar-compact-layer,
+  .reader-omnibar-living-title,
   .reader-omnibar-backdrop,
   .reader-plan-bar,
   .dock-bottom-chrome,
   .dock-bottom-chrome .dock-indicator-track,
-  .reader-chapter-arrows {
+  .reader-chapter-arrow-btn {
     transition-property: opacity, border-color !important;
     transition-duration: 220ms !important;
     transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1) !important;
@@ -797,8 +843,9 @@ a:focus-visible,
   .reader-omnibar-compact-layer {
     background-color: var(--bg-omnibar);
     border-bottom: 1px solid color-mix(in srgb, var(--line-subtle) 70%, transparent);
-    -webkit-backdrop-filter: blur(12px);
-    backdrop-filter: blur(12px);
+    box-shadow: var(--shadow-omnibar);
+    -webkit-backdrop-filter: blur(24px);
+    backdrop-filter: blur(24px);
     transform: none !important;
   }
 
@@ -816,11 +863,11 @@ a:focus-visible,
   .dock-bottom-chrome.is-dock-hidden .dock-nav-item,
   .dock-bottom-chrome.is-dock-hidden .dock-indicator-track,
   .reader-omnibar-header.is-compact .reader-omnibar-full-layer,
-  .reader-chapter-arrows.is-dock-hidden {
+  .reader-chapter-arrow-btn.is-dock-hidden {
     transform: none !important;
   }
 
-  .reader-chapter-arrows.is-dock-hidden {
+  .reader-chapter-arrow-btn.is-dock-hidden:not(.opacity-0) {
     opacity: 0.92;
   }
 
@@ -861,18 +908,14 @@ a:focus-visible,
 }
 
 html.splash-active,
-body.splash-active,
-html:has(#pwa-splash:not(.splash-dismissed)),
-body:has(#pwa-splash:not(.splash-dismissed)) {
+body.splash-active {
   overflow: hidden !important;
   scrollbar-width: none !important;
   -ms-overflow-style: none !important;
 }
 
 html.splash-active::-webkit-scrollbar,
-body.splash-active::-webkit-scrollbar,
-html:has(#pwa-splash:not(.splash-dismissed))::-webkit-scrollbar,
-body:has(#pwa-splash:not(.splash-dismissed))::-webkit-scrollbar {
+body.splash-active::-webkit-scrollbar {
   display: none !important;
   width: 0 !important;
   height: 0 !important;
@@ -986,7 +1029,8 @@ body:has(#pwa-splash:not(.splash-dismissed))::-webkit-scrollbar {
 }
 
 .animate-fade-in {
-  animation: fadeIn 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: fadeIn 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  backface-visibility: hidden;
 }
 
 

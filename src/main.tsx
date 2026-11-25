@@ -11,11 +11,20 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator && import.meta
     let hasReloadedForUpdate = false;
 
     navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (hasReloadedForUpdate) return;
+      const win = window as unknown as { __pwaApplyUpdateRequested?: boolean };
+      const splashEl = document.getElementById('pwa-splash');
+      const isSplashStillCovering =
+        Boolean(splashEl) && !splashEl?.classList.contains('splash-dismissed');
+
+      // Only auto-reload if user explicitly clicked Apply Update, or if the splash screen is
+      // still actively covering an immediate boot update (< 1.5s) — never strobe mid-session or on wake.
       if (
-        hadControllerAtBoot &&
-        !hasReloadedForUpdate &&
-        typeof performance !== 'undefined' &&
-        performance.now() < 15000
+        win.__pwaApplyUpdateRequested ||
+        (hadControllerAtBoot &&
+          isSplashStillCovering &&
+          typeof performance !== 'undefined' &&
+          performance.now() < 1500)
       ) {
         hasReloadedForUpdate = true;
         window.location.reload();

@@ -73,8 +73,15 @@
         background-color: #f5efeb;
         color: #1c1917;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-        transition: opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.45s ease;
+        opacity: 1;
+        will-change: opacity;
+        transform: translate3d(0, 0, 0);
+        backface-visibility: hidden;
+        contain: layout style paint;
+        transition: opacity 0.38s cubic-bezier(0.16, 1, 0.3, 1);
         pointer-events: auto;
+        touch-action: none;
+        overscroll-behavior: none;
         user-select: none;
         -webkit-user-select: none;
         overflow: hidden !important;
@@ -89,17 +96,13 @@
 
       /* Deactivate scrollbars on page while splash screen is active */
       html.splash-active,
-      body.splash-active,
-      html:has(#pwa-splash:not(.splash-dismissed)),
-      body:has(#pwa-splash:not(.splash-dismissed)) {
+      body.splash-active {
         overflow: hidden !important;
         scrollbar-width: none !important;
         -ms-overflow-style: none !important;
       }
       html.splash-active::-webkit-scrollbar,
-      body.splash-active::-webkit-scrollbar,
-      html:has(#pwa-splash:not(.splash-dismissed))::-webkit-scrollbar,
-      body:has(#pwa-splash:not(.splash-dismissed))::-webkit-scrollbar {
+      body.splash-active::-webkit-scrollbar {
         display: none !important;
         width: 0 !important;
         height: 0 !important;
@@ -107,8 +110,18 @@
 
       #pwa-splash.splash-dismissed {
         opacity: 0;
-        visibility: hidden;
         pointer-events: none;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #pwa-splash {
+          transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .splash-progress-bar {
+          animation: none !important;
+          transform: translate3d(0, 0, 0) scaleX(1) !important;
+          opacity: 0.35 !important;
+        }
       }
 
       /* Parchment Theme (Default) */
@@ -186,19 +199,19 @@
       }
       .splash-progress-bar {
         position: absolute;
-        top: 0;
-        bottom: 0;
-        left: 0;
-        width: 35%;
+        inset: 0;
+        width: 100%;
         background-color: currentColor;
         opacity: 0.75;
         border-radius: 9999px;
-        animation: splash-indeterminate 1.4s infinite ease-in-out;
+        transform-origin: left center;
+        will-change: transform;
+        animation: splash-indeterminate 1.4s infinite cubic-bezier(0.4, 0, 0.2, 1);
       }
       @keyframes splash-indeterminate {
-        0% { left: -35%; width: 35%; }
-        50% { left: 30%; width: 45%; }
-        100% { left: 100%; width: 35%; }
+        0% { transform: translate3d(-40%, 0, 0) scaleX(0.35); }
+        50% { transform: translate3d(25%, 0, 0) scaleX(0.5); }
+        100% { transform: translate3d(105%, 0, 0) scaleX(0.35); }
       }
     </style>
   </head>
@@ -232,46 +245,146 @@
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
     <script>
-      // Fallback safeguard: Never allow splash to freeze the user indefinitely
+      // Unified, visibility-aware splash controller: prevents strobe/blinks on cold-start and wake
       (function() {
         var splash = document.getElementById('pwa-splash');
+        var state = 'active'; // 'active' | 'pending-visible' | 'dismissing' | 'dismissed'
+        var fallbackCleanupTimer = null;
+        var maxWaitTimer = null;
+
         function cleanupSplashActive() {
           document.body.classList.remove('splash-active');
           document.documentElement.classList.remove('splash-active');
         }
+
         if (!splash) {
           cleanupSplashActive();
+          window.__reneuDismissSplash = function() { cleanupSplashActive(); };
           return;
         }
 
-        function dismissAndRemove(el) {
+        function finalizeRemoval() {
+          if (state === 'dismissed') return;
+          state = 'dismissed';
+          if (fallbackCleanupTimer) {
+            clearTimeout(fallbackCleanupTimer);
+            fallbackCleanupTimer = null;
+          }
+          if (maxWaitTimer) {
+            clearTimeout(maxWaitTimer);
+            maxWaitTimer = null;
+          }
+          cleanupSplashActive();
+          var el = document.getElementById('pwa-splash');
+          if (el && el.parentNode) {
+            el.parentNode.removeChild(el);
+          }
+        }
+
+        function startFadeOut() {
+          var el = document.getElementById('pwa-splash');
+          if (!el || state === 'dismissing' || state === 'dismissed') return;
+          state = 'dismissing';
+
+          var onTransitionEnd = function(e) {
+            if (e && e.target !== el) return;
+            if (e && e.propertyName && e.propertyName !== 'opacity') return;
+            el.removeEventListener('transitionend', onTransitionEnd);
+            finalizeRemoval();
+          };
+          el.addEventListener('transitionend', onTransitionEnd);
+
+          // Wait two frames so opacity:1 and ready content underneath are composited cleanly before fade
+          requestAnimationFrame(function() {
+            requestAnimationFrame(function() {
+              if (state !== 'dismissing') return;
+              if (document.visibilityState === 'hidden') {
+                // Tab went hidden before transition started; wait until visible again
+                state = 'pending-visible';
+                el.removeEventListener('transitionend', onTransitionEnd);
+                waitUntilVisibleAndFade();
+                return;
+              }
+              el.classList.add('splash-dismissed');
+              // Safety fallback longer than CSS transition (380ms) in case transitionend doesn't fire
+              fallbackCleanupTimer = setTimeout(finalizeRemoval, 520);
+            });
+          });
+        }
+
+        function waitUntilVisibleAndFade() {
+          if (document.visibilityState === 'visible') {
+            startFadeOut();
+            return;
+          }
+          var onVisible = function() {
+            if (document.visibilityState === 'visible') {
+              document.removeEventListener('visibilitychange', onVisible);
+              window.removeEventListener('pageshow', onVisible);
+              if (state === 'pending-visible') {
+                startFadeOut();
+              }
+            }
+          };
+          document.addEventListener('visibilitychange', onVisible);
+          window.addEventListener('pageshow', onVisible);
+        }
+
+        function dismissSplash() {
+          var el = document.getElementById('pwa-splash');
+          if (!el) {
+            finalizeRemoval();
+            return;
+          }
+          if (state === 'dismissing' || state === 'dismissed' || state === 'pending-visible') {
+            return;
+          }
+          if (document.visibilityState === 'hidden') {
+            state = 'pending-visible';
+            waitUntilVisibleAndFade();
+            return;
+          }
+          startFadeOut();
+        }
+
+        window.__reneuDismissSplash = dismissSplash;
+
+        // If restored from bfcache or woken after splash was already dismissed/dismissing, ensure clean state
+        window.addEventListener('pageshow', function(e) {
+          var el = document.getElementById('pwa-splash');
           if (!el) {
             cleanupSplashActive();
             return;
           }
-          el.classList.add('splash-dismissed');
-          cleanupSplashActive();
-          setTimeout(function() {
-            cleanupSplashActive();
-            if (el.parentNode) el.parentNode.removeChild(el);
-          }, 400);
-        }
+          if (e && e.persisted && (state === 'dismissed' || el.classList.contains('splash-dismissed'))) {
+            finalizeRemoval();
+          }
+        });
 
         // Allow clicking the splash screen to dismiss at any time
         splash.addEventListener('click', function() {
-          dismissAndRemove(splash);
+          dismissSplash();
         });
 
-        // 3.5s maximum fallback unless explicit ?splash=true
+        // 4.5s maximum safeguard (only fires while page is visible, avoiding post-hibernation instant snap)
         if (window.location.search.indexOf('splash=') === -1) {
-          setTimeout(function() {
-            var el = document.getElementById('pwa-splash');
-            if (!el || el.classList.contains('splash-dismissed')) {
-              cleanupSplashActive();
-              return;
-            }
-            dismissAndRemove(el);
-          }, 3500);
+          var scheduleMaxWait = function() {
+            if (maxWaitTimer) clearTimeout(maxWaitTimer);
+            maxWaitTimer = setTimeout(function() {
+              if (document.visibilityState === 'visible') {
+                dismissSplash();
+              } else {
+                var onResume = function() {
+                  if (document.visibilityState === 'visible') {
+                    document.removeEventListener('visibilitychange', onResume);
+                    dismissSplash();
+                  }
+                };
+                document.addEventListener('visibilitychange', onResume);
+              }
+            }, 4500);
+          };
+          scheduleMaxWait();
         }
       })();
     </script>

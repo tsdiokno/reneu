@@ -18,6 +18,8 @@ import {
   getExposedNotes,
   saveExposedNotes,
   ensureNotesInitialized,
+  THEME_STORAGE_KEY,
+  APPEARANCE_STORAGE_KEY,
   type ReadingPosition,
 } from './services/bibleStorage';
 import type {
@@ -80,6 +82,46 @@ const MAX_HISTORY_LENGTH = 50;
 const SESSION_HISTORY_STACK_KEY = 'reneu_nav_history_stack';
 const SESSION_HISTORY_INDEX_KEY = 'reneu_nav_history_index';
 
+function resolveInitialThemeSync(): ThemeMode {
+  if (typeof window === 'undefined') return 'parchment';
+  try {
+    const stored = localStorage.getItem(THEME_STORAGE_KEY);
+    if (stored === 'parchment' || stored === 'white' || stored === 'black') {
+      return stored;
+    }
+    const appStr = localStorage.getItem(APPEARANCE_STORAGE_KEY);
+    if (appStr) {
+      const parsed = JSON.parse(appStr);
+      if (parsed?.theme === 'parchment' || parsed?.theme === 'white' || parsed?.theme === 'black') {
+        return parsed.theme;
+      }
+    }
+    const domTheme = document.documentElement.getAttribute('data-theme');
+    if (domTheme === 'parchment' || domTheme === 'white' || domTheme === 'black') {
+      return domTheme;
+    }
+    if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) {
+      return 'black';
+    }
+  } catch {}
+  return 'parchment';
+}
+
+function resolveInitialAppearanceSync(): AppearanceSettings {
+  const initialTheme = resolveInitialThemeSync();
+  if (typeof window === 'undefined') {
+    return { ...DEFAULT_APPEARANCE, theme: initialTheme };
+  }
+  try {
+    const appStr = localStorage.getItem(APPEARANCE_STORAGE_KEY);
+    if (appStr) {
+      const parsed = JSON.parse(appStr);
+      return { ...DEFAULT_APPEARANCE, ...parsed, theme: initialTheme };
+    }
+  } catch {}
+  return { ...DEFAULT_APPEARANCE, theme: initialTheme };
+}
+
 export const App: React.FC = () => {
   const [position, setPosition] = useState<ReadingPosition>({ bookId: 43, chapter: 1 });
 
@@ -109,8 +151,8 @@ export const App: React.FC = () => {
     }
     return 0;
   });
-  const [theme, setTheme] = useState<ThemeMode>('parchment');
-  const [appearance, setAppearance] = useState<AppearanceSettings>(DEFAULT_APPEARANCE);
+  const [theme, setTheme] = useState<ThemeMode>(resolveInitialThemeSync);
+  const [appearance, setAppearance] = useState<AppearanceSettings>(resolveInitialAppearanceSync);
   const [currentView, setCurrentView] = useState<'reader' | 'notes' | 'plans' | 'settings'>('reader');
   const [chapterData, setChapterData] = useState<ChapterData | null>(null);
   const [notes, setNotes] = useState<CommentaryNote[]>([]);
@@ -132,6 +174,9 @@ export const App: React.FC = () => {
   const [isComposingPlainNote, setIsComposingPlainNote] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [appInitialized, setAppInitialized] = useState<boolean>(false);
+  const [chapterLoadCount, setChapterLoadCount] = useState<number>(0);
+  const hasInitialChapterLoadedRef = useRef<boolean>(false);
+  const hasTriggeredSplashDismissRef = useRef<boolean>(false);
   const [planReadingSession, setPlanReadingSession] = useState<PlanReadingSession | null>(null);
   const [isMobile, setIsMobile] = useState<boolean>(() =>
     typeof window !== 'undefined' ? window.innerWidth < 1024 : false
@@ -389,17 +434,34 @@ export const App: React.FC = () => {
     };
     const nextColor = themeColors[theme];
 
-    const replaceThemeColorMeta = (color: string) => {
-      document.querySelectorAll('meta[name="theme-color"]').forEach((node) => node.remove());
+    const syncThemeColorMeta = (color: string, forceReplace = false) => {
+      const metas = document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]');
+      if (!forceReplace && metas.length === 1 && metas[0].content === color) {
+        return;
+      }
+      if (metas.length === 1 && !forceReplace) {
+        metas[0].content = color;
+        return;
+      }
+      metas.forEach((node) => node.remove());
       const freshMeta = document.createElement('meta');
       freshMeta.name = 'theme-color';
       freshMeta.content = color;
       document.head.appendChild(freshMeta);
     };
 
-    document.documentElement.setAttribute('data-theme', theme);
-    document.documentElement.style.backgroundColor = nextColor;
-    document.body.style.backgroundColor = nextColor;
+    const prevTheme = document.documentElement.getAttribute('data-theme');
+    const didThemeChange = prevTheme !== theme;
+
+    if (didThemeChange) {
+      document.documentElement.setAttribute('data-theme', theme);
+    }
+    if (document.documentElement.style.backgroundColor !== nextColor) {
+      document.documentElement.style.backgroundColor = nextColor;
+    }
+    if (document.body.style.backgroundColor !== nextColor) {
+      document.body.style.backgroundColor = nextColor;
+    }
     if (theme === 'black') {
       document.documentElement.classList.add('dark');
       document.documentElement.style.colorScheme = 'dark';
@@ -408,30 +470,34 @@ export const App: React.FC = () => {
       document.documentElement.style.colorScheme = 'light';
     }
 
-    replaceThemeColorMeta(nextColor);
+    syncThemeColorMeta(nextColor, didThemeChange);
 
-    // Re-insert meta[name="theme-color"] after paint & CSS transitions settle so iOS Safari
-    // re-samples both the fresh meta tag and settled top-edge pixels immediately.
+    // Only re-sample theme-color meta after paint settle when theme actually changed
+    let rafOuter = 0;
     let rafInner = 0;
-    const rafOuter = window.requestAnimationFrame(() => {
-      rafInner = window.requestAnimationFrame(() => {
-        replaceThemeColorMeta(nextColor);
+    let settleTimer = 0;
+    if (didThemeChange) {
+      rafOuter = window.requestAnimationFrame(() => {
+        rafInner = window.requestAnimationFrame(() => {
+          syncThemeColorMeta(nextColor, true);
+        });
       });
-    });
-    const settleTimer = window.setTimeout(() => {
-      replaceThemeColorMeta(nextColor);
-    }, 240);
+      settleTimer = window.setTimeout(() => {
+        syncThemeColorMeta(nextColor, false);
+      }, 240);
+    }
 
     const handleVisibilityOrShow = () => {
       if (document.visibilityState === 'visible') {
-        replaceThemeColorMeta(nextColor);
+        // Update in-place only if mismatched; never tear down and recreate on every wake
+        syncThemeColorMeta(nextColor, false);
       }
     };
     window.addEventListener('pageshow', handleVisibilityOrShow);
     document.addEventListener('visibilitychange', handleVisibilityOrShow);
 
     const splash = document.getElementById('pwa-splash');
-    if (splash) {
+    if (splash && splash.getAttribute('data-splash-theme') !== theme) {
       splash.setAttribute('data-splash-theme', theme);
     }
 
@@ -440,9 +506,9 @@ export const App: React.FC = () => {
     }
 
     return () => {
-      window.cancelAnimationFrame(rafOuter);
-      window.cancelAnimationFrame(rafInner);
-      window.clearTimeout(settleTimer);
+      if (rafOuter) window.cancelAnimationFrame(rafOuter);
+      if (rafInner) window.cancelAnimationFrame(rafInner);
+      if (settleTimer) window.clearTimeout(settleTimer);
       window.removeEventListener('pageshow', handleVisibilityOrShow);
       document.removeEventListener('visibilitychange', handleVisibilityOrShow);
     };
@@ -463,6 +529,7 @@ export const App: React.FC = () => {
     if (!appInitialized) return;
     let mounted = true;
     const startTime = Date.now();
+    const isInitialLoad = !hasInitialChapterLoadedRef.current;
     setIsLoading(true);
 
     Promise.all([
@@ -473,15 +540,19 @@ export const App: React.FC = () => {
       .then(async ([data, chapterNotes]) => {
         if (!mounted) return;
 
-        // Artificial delay ensures the placeholder skeleton settles gracefully
-        // and doesn't flicker or flash too quickly when cached data returns in <20ms
-        const elapsed = Date.now() - startTime;
-        const remainingDelay = Math.max(0, SKELETON_ARTIFICIAL_DELAY_MS - elapsed);
-        if (remainingDelay > 0) {
-          await new Promise((resolve) => setTimeout(resolve, remainingDelay));
+        // Skip artificial skeleton delay on initial boot so cached scripture paints directly
+        // behind the splash screen and cross-fades cleanly without a skeleton flash.
+        if (!isInitialLoad) {
+          const elapsed = Date.now() - startTime;
+          const remainingDelay = Math.max(0, SKELETON_ARTIFICIAL_DELAY_MS - elapsed);
+          if (remainingDelay > 0) {
+            await new Promise((resolve) => setTimeout(resolve, remainingDelay));
+          }
         }
 
         if (!mounted) return;
+        hasInitialChapterLoadedRef.current = true;
+        setChapterLoadCount((c) => c + 1);
         setChapterData(data);
         setNotes(chapterNotes);
       })
@@ -548,7 +619,25 @@ export const App: React.FC = () => {
 
   // Manage HTML PWA splash screen dismissal (honoring VITE_SIMULATE_SPLASH / ?splash=true)
   useEffect(() => {
+    const win = window as Window & { __reneuDismissSplash?: () => void };
     const splash = document.getElementById('pwa-splash');
+    const triggerUnifiedDismiss = () => {
+      if (hasTriggeredSplashDismissRef.current) return;
+      hasTriggeredSplashDismissRef.current = true;
+      if (typeof win.__reneuDismissSplash === 'function') {
+        win.__reneuDismissSplash();
+      } else {
+        document.body.classList.remove('splash-active');
+        document.documentElement.classList.remove('splash-active');
+        if (splash) {
+          splash.classList.add('splash-dismissed');
+          window.setTimeout(() => {
+            if (splash.parentNode) splash.remove();
+          }, 420);
+        }
+      }
+    };
+
     if (!splash) {
       document.body.classList.remove('splash-active');
       document.documentElement.classList.remove('splash-active');
@@ -556,54 +645,62 @@ export const App: React.FC = () => {
     }
 
     const isSimulatingSplash = checkSimulateSplash();
-    let removeTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const dismissSplash = () => {
-      document.body.classList.remove('splash-active');
-      document.documentElement.classList.remove('splash-active');
-      if (!splash.classList.contains('splash-dismissed')) {
-        splash.classList.add('splash-dismissed');
-      }
-      if (!removeTimer) {
-        removeTimer = setTimeout(() => {
-          if (splash.parentNode) splash.remove();
-        }, 400);
-      }
-    };
-
-    // Never re-open splash if the user or fallback script already dismissed it
-    if (splash.classList.contains('splash-dismissed')) {
-      document.body.classList.remove('splash-active');
-      document.documentElement.classList.remove('splash-active');
+    // Never re-open splash if already dismissed
+    if (splash.classList.contains('splash-dismissed') || hasTriggeredSplashDismissRef.current) {
       return;
     }
 
     if (isSimulatingSplash) {
       document.body.classList.add('splash-active');
       document.documentElement.classList.add('splash-active');
-      // Developer escape hatch: click anywhere on splash or press Escape to dismiss
-      const handleDismiss = () => dismissSplash();
+      // Developer escape hatch: press Escape to dismiss (click is handled by index.html controller)
       const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') dismissSplash();
+        if (e.key === 'Escape') triggerUnifiedDismiss();
       };
-      splash.addEventListener('click', handleDismiss);
       window.addEventListener('keydown', handleKeyDown);
       return () => {
-        if (removeTimer) clearTimeout(removeTimer);
-        splash.removeEventListener('click', handleDismiss);
         window.removeEventListener('keydown', handleKeyDown);
       };
     }
 
-    // Normal launch: dismiss as soon as the app is initialized
-    if (appInitialized) {
-      dismissSplash();
+    if (!appInitialized) return;
+
+    let cancelled = false;
+    let graceTimer: number | null = null;
+
+    const dismissWhenFontsSettle = () => {
+      if (cancelled || hasTriggeredSplashDismissRef.current) return;
+      const fontsReady =
+        typeof document !== 'undefined' && document.fonts && document.fonts.ready
+          ? Promise.race([
+              document.fonts.ready.catch(() => {}),
+              new Promise<void>((resolve) => window.setTimeout(resolve, 180)),
+            ])
+          : Promise.resolve();
+
+      void fontsReady.then(() => {
+        if (!cancelled) {
+          triggerUnifiedDismiss();
+        }
+      });
+    };
+
+    // Wait until initial chapter is ready so splash cross-fades directly into rendered text,
+    // with a 1200ms grace cap so slow/offline uncached loads fall back to the skeleton smoothly.
+    if (isChapterReady || currentView !== 'reader') {
+      dismissWhenFontsSettle();
+    } else {
+      graceTimer = window.setTimeout(() => {
+        dismissWhenFontsSettle();
+      }, 1200);
     }
 
     return () => {
-      if (removeTimer) clearTimeout(removeTimer);
+      cancelled = true;
+      if (graceTimer !== null) window.clearTimeout(graceTimer);
     };
-  }, [appInitialized]);
+  }, [appInitialized, isChapterReady, currentView]);
 
   // Refresh notes when returning to reader
   useEffect(() => {
@@ -1275,6 +1372,7 @@ export const App: React.FC = () => {
   const readerChromeRef = useRef<HTMLDivElement>(null);
   const readerOmnibarRef = useRef<HTMLElement>(null);
   const readerFullRowRef = useRef<HTMLDivElement>(null);
+  const fullTitleAnchorRef = useRef<HTMLSpanElement>(null);
   const expandedScrollAnchorYRef = useRef<number>(0);
 
   const {
@@ -1321,6 +1419,85 @@ export const App: React.FC = () => {
     }
   }, [currentView, Boolean(planReadingSession)]);
 
+  // Measure exact coordinates of the omnibar title text so the exact same element animates seamlessly to centered compact mode
+  useLayoutEffect(() => {
+    if (currentView !== 'reader') return;
+    const headerEl = readerOmnibarRef.current;
+    const anchorEl = fullTitleAnchorRef.current;
+    if (!headerEl || !anchorEl) return;
+
+    const syncLivingTitleMetrics = () => {
+      const headerW = headerEl.offsetWidth;
+      if (headerW <= 0) return;
+
+      // Walk layout offsets (unaffected by CSS transforms on .reader-omnibar-full-layer)
+      let left = 0;
+      let top = 0;
+      let node: HTMLElement | null = anchorEl;
+      while (node && node !== headerEl && headerEl.contains(node)) {
+        left += node.offsetLeft;
+        top += node.offsetTop;
+        node = node.offsetParent as HTMLElement | null;
+      }
+
+      const anchorW = anchorEl.offsetWidth;
+      const anchorH = anchorEl.offsetHeight;
+      if (anchorW <= 0 || anchorH <= 0) return;
+
+      const isSmUp = window.matchMedia('(min-width: 640px)').matches;
+      const compactBarH = isSmUp ? 44 : 40;
+      const compactFontPx = isSmUp ? 16 : 14;
+      const fullFontPx = parseFloat(window.getComputedStyle(anchorEl).fontSize) || (isSmUp ? 24 : 20);
+
+      const maxCompactW = Math.max(120, headerW - (isSmUp ? 64 : 32));
+      const scale = Math.min(compactFontPx / fullFontPx, maxCompactW / anchorW);
+
+      const dx = headerW / 2 - (left + anchorW / 2);
+      const dy = compactBarH / 2 - (top + anchorH / 2);
+
+      const slotEl = anchorEl.parentElement;
+      const slotMaxW = slotEl ? Math.max(0, slotEl.clientWidth - 4) : anchorW;
+
+      headerEl.style.setProperty('--omni-title-left', `${left}px`);
+      headerEl.style.setProperty('--omni-title-top', `${top}px`);
+      headerEl.style.setProperty('--omni-title-h', `${anchorH}px`);
+      headerEl.style.setProperty('--omni-title-max-w', `${slotMaxW}px`);
+      headerEl.style.setProperty('--omni-title-dx', `${dx}px`);
+      headerEl.style.setProperty('--omni-title-dy', `${dy}px`);
+      headerEl.style.setProperty('--omni-title-scale', `${scale.toFixed(4)}`);
+      headerEl.dataset.titleReady = 'true';
+    };
+
+    syncLivingTitleMetrics();
+
+    let ro: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(syncLivingTitleMetrics);
+      ro.observe(headerEl);
+      ro.observe(anchorEl);
+      if (anchorEl.parentElement) {
+        ro.observe(anchorEl.parentElement);
+      }
+    } else {
+      window.addEventListener('resize', syncLivingTitleMetrics, { passive: true });
+    }
+
+    let cancelled = false;
+    if (document.fonts && typeof document.fonts.ready?.then === 'function') {
+      document.fonts.ready.then(() => {
+        if (!cancelled) syncLivingTitleMetrics();
+      });
+    }
+
+    return () => {
+      cancelled = true;
+      ro?.disconnect();
+      if (!ro) {
+        window.removeEventListener('resize', syncLivingTitleMetrics);
+      }
+    };
+  }, [currentView, currentLocationDisplayLabel, Boolean(command), Boolean(currentUser), currentUser?.fullName]);
+
   // Clear manual tap-expansion when upward scroll naturally restores omnibar, switching views, or changing chapter
   useEffect(() => {
     if (currentView !== 'reader' || isReaderOmnibarVisible) {
@@ -1350,21 +1527,6 @@ export const App: React.FC = () => {
     expandedScrollAnchorYRef.current = window.scrollY || 0;
     setIsReaderOmnibarManuallyExpanded(true);
   }, []);
-
-  const compactOmnibarLabel = useMemo(() => {
-    if (activePlanAssignedChapter) {
-      return formatAssignedChapterLabel(activePlanAssignedChapter);
-    }
-    if (
-      chapterData &&
-      chapterData.bookId === position.bookId &&
-      chapterData.chapter === position.chapter
-    ) {
-      return `${chapterData.bookName} ${chapterData.chapter}`;
-    }
-    const b = getBookById(position.bookId);
-    return `${b?.name || 'Scripture'} ${position.chapter}`.trim();
-  }, [activePlanAssignedChapter, formatAssignedChapterLabel, chapterData, position.bookId, position.chapter]);
 
   useEffect(() => {
     if (currentView !== 'reader' || !planReadingSession) {
@@ -1578,14 +1740,14 @@ export const App: React.FC = () => {
           {/* Isolated, transform-animated backdrop layer prevents layout reflow and Chromium blur flattening */}
           <div className="reader-omnibar-backdrop-frame" aria-hidden="true">
             <div
-              className={`reader-omnibar-backdrop bg-[var(--bg-omnibar)] backdrop-blur-md border-b transition-[transform,border-color] ${
-                !planReadingSession && (isReaderScrolledPastTop || !isReaderOmnibarFull)
-                  ? 'border-[var(--line-subtle)]/70 shadow-sm'
+              className={`reader-omnibar-backdrop bg-[var(--bg-omnibar)] backdrop-blur-xl border-b ${
+                !planReadingSession
+                  ? `${isReaderScrolledPastTop || !isReaderOmnibarFull ? 'border-[var(--line-subtle)]/70' : 'border-[var(--line-subtle)]/40'} [box-shadow:var(--shadow-omnibar)]`
                   : 'border-transparent'
               }`}
             />
           </div>
-          {/* Compact Shrunk State: Book & Chapter Name Only (tap to expand full omnibar) */}
+          {/* Compact Shrunk Hit Area: full-width tap target to expand full omnibar */}
           <div
             className="reader-omnibar-compact-layer"
             aria-hidden={isReaderOmnibarFull}
@@ -1594,12 +1756,10 @@ export const App: React.FC = () => {
               type="button"
               tabIndex={isReaderOmnibarFull ? -1 : 0}
               onClick={handleExpandCompactOmnibar}
-              className="w-full max-w-7xl mx-auto flex items-center justify-center py-0.5 text-center font-sans text-sm sm:text-base font-semibold tracking-tight text-[var(--text-primary)] hover:opacity-75 transition-opacity cursor-pointer select-none"
-              title={`Tap to expand navigation (${compactOmnibarLabel})`}
-              aria-label={`Expand navigation bar (${compactOmnibarLabel})`}
-            >
-              <span className="truncate">{compactOmnibarLabel}</span>
-            </button>
+              className="w-full h-full max-w-7xl mx-auto cursor-pointer select-none focus:outline-none"
+              title={`Tap to expand navigation (${currentLocationDisplayLabel})`}
+              aria-label={`Expand navigation bar (${currentLocationDisplayLabel})`}
+            />
           </div>
 
           {/* Full Omnibar & Features */}
@@ -1705,69 +1865,84 @@ export const App: React.FC = () => {
               </div>
 
               <div className="relative flex-1 min-w-0 flex items-center">
-                <input
-                  ref={commandInputRef}
-                  type="text"
-                  enterKeyHint="go"
-                  value={command}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setCommand(val);
-                    setActiveSuggestionIndex(0);
-                    setIsSuggestionsOpen(val.trim().length > 0);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      executeCommandSubmit();
-                      return;
-                    }
-                    if (e.key === 'ArrowDown' && omnibarSuggestions.length > 0) {
-                      e.preventDefault();
-                      setActiveSuggestionIndex((prev) => (prev + 1) % omnibarSuggestions.length);
-                      return;
-                    }
-                    if (e.key === 'ArrowUp' && omnibarSuggestions.length > 0) {
-                      e.preventDefault();
-                      setActiveSuggestionIndex(
-                        (prev) => (prev - 1 + omnibarSuggestions.length) % omnibarSuggestions.length
-                      );
-                      return;
-                    }
-                    if (e.key === 'Escape') {
-                      if (isSuggestionsOpen) {
+                <div className="relative flex-1 min-w-0 flex items-center">
+                  <input
+                    ref={commandInputRef}
+                    type="text"
+                    enterKeyHint="go"
+                    tabIndex={isReaderOmnibarFull ? 0 : -1}
+                    value={command}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setCommand(val);
+                      setActiveSuggestionIndex(0);
+                      setIsSuggestionsOpen(val.trim().length > 0);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                         e.preventDefault();
-                        e.stopPropagation();
-                        setIsSuggestionsOpen(false);
-                      } else {
-                        setCommand(currentLocationDisplayLabel);
-                        commandInputRef.current?.blur();
+                        executeCommandSubmit();
+                        return;
                       }
+                      if (e.key === 'ArrowDown' && omnibarSuggestions.length > 0) {
+                        e.preventDefault();
+                        setActiveSuggestionIndex((prev) => (prev + 1) % omnibarSuggestions.length);
+                        return;
+                      }
+                      if (e.key === 'ArrowUp' && omnibarSuggestions.length > 0) {
+                        e.preventDefault();
+                        setActiveSuggestionIndex(
+                          (prev) => (prev - 1 + omnibarSuggestions.length) % omnibarSuggestions.length
+                        );
+                        return;
+                      }
+                      if (e.key === 'Escape') {
+                        if (isSuggestionsOpen) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setIsSuggestionsOpen(false);
+                        } else {
+                          setCommand(currentLocationDisplayLabel);
+                          commandInputRef.current?.blur();
+                        }
+                      }
+                    }}
+                    onFocus={() => setIsReaderOmnibarFocused(true)}
+                    onBlur={() => {
+                      setIsReaderOmnibarFocused(false);
+                      setIsSuggestionsOpen(false);
+                      if (!skipBlurResetRef.current) {
+                        setCommand(currentLocationDisplayLabel);
+                      }
+                    }}
+                    placeholder={currentLocationDisplayLabel}
+                    className={`w-full bg-transparent border-none outline-none font-sans text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight placeholder-[var(--input-placeholder)] py-1 pr-1 leading-normal select-text ${
+                      !isReaderOmnibarFocused && command === currentLocationDisplayLabel
+                        ? 'opacity-0'
+                        : 'text-[var(--text-primary)] opacity-100'
+                    }`}
+                    autoComplete="off"
+                    spellCheck={false}
+                    role="combobox"
+                    aria-expanded={isSuggestionsOpen && omnibarSuggestions.length > 0}
+                    aria-controls="reader-omnibar-suggestions"
+                    aria-activedescendant={
+                      isSuggestionsOpen && omnibarSuggestions[activeSuggestionIndex]
+                        ? `omnibar-option-${omnibarSuggestions[activeSuggestionIndex].id}`
+                        : undefined
                     }
-                  }}
-                  onFocus={() => setIsReaderOmnibarFocused(true)}
-                  onBlur={() => {
-                    setIsReaderOmnibarFocused(false);
-                    setIsSuggestionsOpen(false);
-                    if (!skipBlurResetRef.current) {
-                      setCommand(currentLocationDisplayLabel);
-                    }
-                  }}
-                  placeholder={currentLocationDisplayLabel}
-                  className="w-full bg-transparent border-none outline-none font-sans text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight text-[var(--text-primary)] placeholder-[var(--input-placeholder)] py-1 pr-8 leading-normal select-text"
-                  autoComplete="off"
-                  spellCheck={false}
-                  role="combobox"
-                  aria-expanded={isSuggestionsOpen && omnibarSuggestions.length > 0}
-                  aria-controls="reader-omnibar-suggestions"
-                  aria-activedescendant={
-                    isSuggestionsOpen && omnibarSuggestions[activeSuggestionIndex]
-                      ? `omnibar-option-${omnibarSuggestions[activeSuggestionIndex].id}`
-                      : undefined
-                  }
-                  aria-autocomplete="list"
-                  aria-label="Scripture navigation and search omnibar"
-                />
+                    aria-autocomplete="list"
+                    aria-label="Scripture navigation and search omnibar"
+                  />
+                  {/* Exact layout anchor for the shared living omnibar title */}
+                  <span
+                    ref={fullTitleAnchorRef}
+                    aria-hidden="true"
+                    className="absolute left-0 top-0 block max-w-[calc(100%-0.25rem)] py-1 font-sans text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight leading-normal whitespace-nowrap truncate pointer-events-none select-none opacity-0"
+                  >
+                    {currentLocationDisplayLabel}
+                  </span>
+                </div>
                 {/* Hidden submit control required by iOS WebKit so keyboard submit/[check] triggers form submission */}
                 <button type="submit" tabIndex={-1} aria-hidden="true" className="sr-only">
                   Go
@@ -1901,20 +2076,24 @@ export const App: React.FC = () => {
             </div>
           </div>
           </div>
+
+          {/* Single Shared Living Title: exact same text element shrinks and glides to centered compact mode */}
+          <span
+            aria-hidden="true"
+            className={`reader-omnibar-living-title block py-1 font-sans text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight leading-normal text-[var(--text-primary)] whitespace-nowrap truncate pointer-events-none select-none ${
+              isReaderOmnibarFocused || command !== currentLocationDisplayLabel ? 'is-input-focused' : ''
+            }`}
+          >
+            {currentLocationDisplayLabel}
+          </span>
         </header>
 
           {/* Plan Mode Completion Bar: glides cleanly via transform beneath the omnibar */}
           {planReadingSession && (
             <div
               data-reader-plan-bar
-              className={`reader-plan-bar relative z-10 pointer-events-auto border-b border-[var(--line-subtle)] px-4 sm:px-8 py-2 sm:py-2.5 ${
-                isReaderScrolledPastTop || !isReaderOmnibarFull ? 'shadow-sm' : ''
-              }`}
+              className="reader-plan-bar relative z-10 pointer-events-auto bg-[var(--bg-omnibar)] backdrop-blur-xl border-b border-[var(--line-subtle)]/70 [box-shadow:var(--shadow-omnibar)] px-4 sm:px-8 py-2 sm:py-2.5"
             >
-              <div
-                className="pointer-events-none absolute inset-0 bg-[var(--bg-omnibar)] backdrop-blur-md -z-10"
-                aria-hidden="true"
-              />
           <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 text-xs font-sans">
             <div className="flex items-center gap-2 sm:gap-3 min-w-0">
               <button
@@ -2062,7 +2241,7 @@ export const App: React.FC = () => {
 
       {/* Sticky Header for Settings View */}
       {currentView === 'settings' && (
-        <header className="sticky top-0 z-40 bg-[var(--bg-omnibar)] backdrop-blur-md pt-4 sm:pt-5 pb-4 px-4 sm:px-8">
+        <header className="sticky top-0 z-40 bg-[var(--bg-omnibar)] backdrop-blur-xl border-b border-[var(--line-subtle)]/70 [box-shadow:var(--shadow-omnibar)] pt-4 sm:pt-5 pb-4 px-4 sm:px-8">
           <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
             <div className="flex-1 min-w-0 flex items-center py-1">
               <h1 className="w-full font-sans text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight text-[var(--text-primary)] py-1 m-0 leading-normal select-none truncate">
@@ -2082,7 +2261,7 @@ export const App: React.FC = () => {
               readerLineSpacingClass={readerLineSpacingClass}
             />
           ) : (
-            <div className="flex flex-col w-full pb-32 animate-fade-in">
+            <div className={`flex flex-col w-full pb-32 ${chapterLoadCount > 1 ? 'animate-fade-in' : ''}`}>
               {displayedVerses.map((v) => {
                 const note = notesByVerse.get(v.verse);
                 const hasNote = Boolean(note && note.content && note.content.trim().length > 0);
@@ -2279,9 +2458,7 @@ export const App: React.FC = () => {
 
             return (
               <div
-                className={`reader-chapter-arrows absolute bottom-full left-0 right-0 mb-2.5 sm:mb-3 flex items-center justify-between pointer-events-none ${
-                  isDockHidden ? 'is-dock-hidden' : ''
-                } ${canShowChapterArrows ? 'opacity-100' : 'opacity-0'}`}
+                className="reader-chapter-arrows absolute bottom-full left-0 right-0 mb-2.5 sm:mb-3 flex items-center justify-between pointer-events-none"
                 aria-hidden={!canShowChapterArrows}
               >
                 <div>
@@ -2292,9 +2469,11 @@ export const App: React.FC = () => {
                       onClick={prevChapterBtn.onClick}
                       title={prevChapterBtn.title}
                       aria-label={prevChapterBtn.ariaLabel}
-                      className={`${
-                        canShowChapterArrows ? 'pointer-events-auto' : 'pointer-events-none'
-                      } w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm flex items-center justify-center text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)] hover:scale-105 active:scale-95 transition-[transform,background-color,color,border-color] duration-200 cursor-pointer group`}
+                      className={`reader-chapter-arrow-btn ${
+                        isDockHidden ? 'is-dock-hidden' : ''
+                      } ${
+                        canShowChapterArrows ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+                      } w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-dock)] backdrop-blur-xl [box-shadow:var(--shadow-dock)] flex items-center justify-center text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)] hover:scale-105 active:scale-95 cursor-pointer group`}
                     >
                       <svg
                         className="w-5 h-5 transition-transform group-hover:-translate-x-0.5"
@@ -2321,9 +2500,11 @@ export const App: React.FC = () => {
                       onClick={nextChapterBtn.onClick}
                       title={nextChapterBtn.title}
                       aria-label={nextChapterBtn.ariaLabel}
-                      className={`${
-                        canShowChapterArrows ? 'pointer-events-auto' : 'pointer-events-none'
-                      } w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm flex items-center justify-center text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)] hover:scale-105 active:scale-95 transition-[transform,background-color,color,border-color] duration-200 cursor-pointer group`}
+                      className={`reader-chapter-arrow-btn ${
+                        isDockHidden ? 'is-dock-hidden' : ''
+                      } ${
+                        canShowChapterArrows ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+                      } w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-dock)] backdrop-blur-xl [box-shadow:var(--shadow-dock)] flex items-center justify-center text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)] hover:scale-105 active:scale-95 cursor-pointer group`}
                     >
                       <svg
                         className="w-5 h-5 transition-transform group-hover:translate-x-0.5"
@@ -2349,15 +2530,10 @@ export const App: React.FC = () => {
             aria-label="App navigation"
             aria-hidden={currentView === 'reader' && !isReaderOmnibarVisible}
             data-active-tab={activeDockIndex}
-            className={`relative w-full pointer-events-auto font-sans h-16 p-1.5 flex items-center gap-[var(--dock-gap)] rounded-full dock-bottom-chrome ${
+            className={`relative w-full pointer-events-auto font-sans h-16 p-1.5 flex items-center gap-[var(--dock-gap)] rounded-full border border-[var(--line-subtle)] bg-[var(--bg-dock)] backdrop-blur-xl [box-shadow:var(--shadow-dock)] dock-bottom-chrome ${
               currentView === 'reader' && !isReaderOmnibarVisible ? 'is-dock-hidden' : ''
             }`}
           >
-          {/* Isolated GPU-promoted backdrop layer prevents backdrop-filter flattening child pill transitions */}
-          <div
-            className="pointer-events-none absolute inset-0 rounded-full border border-[var(--line-subtle)] bg-[var(--bg-app)]/90 backdrop-blur-md shadow-sm [transform:translateZ(0)]"
-            aria-hidden="true"
-          />
           {/* Active Background Indicator Track (pure compositor CSS transform transition glides cleanly across viewports) */}
           <div className="dock-indicator-track absolute inset-1.5 pointer-events-none" aria-hidden="true">
             <div
@@ -2508,10 +2684,10 @@ export const App: React.FC = () => {
               setIsComposingPlainNote((prev) => !prev);
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`w-16 h-16 shrink-0 rounded-full border shadow-sm flex items-center justify-center transition-[transform,background-color,color,border-color] duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`w-16 h-16 shrink-0 rounded-full border backdrop-blur-xl [box-shadow:var(--shadow-dock)] flex items-center justify-center transition-[transform,background-color,color,border-color] duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
               isComposingPlainNote
-                ? 'bg-[var(--text-primary)] text-[var(--bg-app)] border-[var(--text-primary)] shadow-md'
-                : 'border-[var(--line-subtle)] bg-[var(--bg-app)] text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)]'
+                ? 'bg-[var(--text-primary)]/90 text-[var(--bg-app)] border-[var(--text-primary)]'
+                : 'border-[var(--line-subtle)] bg-[var(--bg-dock)] text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)]'
             }`}
             title={isComposingPlainNote ? 'Close new note' : 'New note'}
             aria-label="Add new note"
