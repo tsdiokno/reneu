@@ -26,6 +26,7 @@ import {
   appendToSynthesisProfile,
 } from '../services/bibleStorage';
 import { cleanNaturalSynthesis } from '../utils/synthesisText';
+import { sampleThreadAwareNotes, buildSynthesisPayloadNotes } from '../utils/synthesisSampler';
 import { ConfirmModal } from './ConfirmModal';
 import { checkIsDevMode } from '../utils/devSimulation';
 import type { CommentaryNote, SynthesisResult, FootnoteReference } from '../types/bible';
@@ -428,28 +429,10 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
       const maxSamples = Math.min(candidates.length, 5);
       const randomCount = Math.floor(Math.random() * (maxSamples - minSamples + 1)) + minSamples;
 
-      const shuffled = [...candidates].sort(() => Math.random() - 0.5);
-      const sampled = shuffled.slice(0, randomCount);
+      const sampled = sampleThreadAwareNotes(currentNotes, randomCount);
+      if (sampled.length < 2) return;
 
-      const payloadNotes = sampled.map((n) => {
-        let ref = '';
-        if (n.isPlainNote || n.bookId === 0) {
-          ref = n.title?.trim() || 'Reflection Note';
-        } else {
-          const book = getBookById(n.bookId);
-          ref = `${book?.name || 'Scripture'} ${n.chapter}:${n.startVerse}`;
-        }
-        return {
-          id: n.id,
-          reference: ref,
-          content: n.content,
-          isSynthesis: false,
-          isPlainNote: Boolean(n.isPlainNote || n.bookId === 0),
-          title: n.title,
-          updatedAt: n.updatedAt,
-        };
-      });
-
+      const payloadNotes = await buildSynthesisPayloadNotes(sampled);
       const engineMode = await getSynthesisEngineMode();
 
       const response = await fetch('/api/synthesize-notes', {
@@ -461,8 +444,8 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
         },
         body: JSON.stringify({
           notes: payloadNotes,
-          sampleCount: randomCount,
-          mode: 'random',
+          sampleCount: payloadNotes.length,
+          mode: 'curated',
           userProfile: currentProfile || undefined,
           engineMode,
           apiKey: userApiKey || undefined,
@@ -1011,14 +994,15 @@ export const AllNotesView: React.FC<AllNotesViewProps> = ({
         onNavigate(parsed.bookId, parsed.chapter, parsed.verse);
         return;
       }
-      // If it's a plain note or non-scripture reference, scroll to the active note card if present
-      const matchedNote = allNotesRef.current.find(
-        (n) =>
-          !isNoteDeleted(n) &&
-          (n.id === refText ||
-            (n.title && n.title.toLowerCase() === refText.toLowerCase()) ||
-            refText.toLowerCase().includes((n.title || '').toLowerCase()))
-      );
+      // If it's a plain note or synthesis reference, scroll to the active note card if present
+      const normalizedRef = refText.replace(/^Synthesis:\s*/i, '').trim().toLowerCase();
+      const matchedNote = allNotesRef.current.find((n) => {
+        if (isNoteDeleted(n)) return false;
+        if (n.id === refText) return true;
+        const noteTitle = n.title?.trim().toLowerCase();
+        if (!noteTitle) return false;
+        return noteTitle === normalizedRef || normalizedRef.includes(noteTitle);
+      });
       if (matchedNote) {
         const el = document.getElementById(`note-card-${matchedNote.id}`);
         el?.scrollIntoView({ behavior: 'smooth', block: 'center' });

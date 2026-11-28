@@ -81,6 +81,7 @@ export interface SynthesisResult {
     id: string;
     reference: string;
     content: string;
+    verseContext?: string;
     isSynthesis?: boolean;
     isPlainNote?: boolean;
     title?: string;

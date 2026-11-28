@@ -80,5 +80,11 @@ export function cleanNaturalSynthesis(rawText: string): string {
     }
   );
 
+  // Pattern 3: Strip any accidental sentence-initial structural labels (e.g. "Trajectory:", "Overlooked angle:")
+  text = text.replace(
+    /(^|[.!?\n]\s+)(?:\*{1,2})?(?:Trajectory(?:\s+Read)?|Overlooked\s+(?:Angle|Nuance)|Gap|Tension|Reflection(?:\s+Prompt)?|Question)\s*:\s*(?:\*{1,2})?/gi,
+    '$1'
+  );
+
   return text.trim();
 }

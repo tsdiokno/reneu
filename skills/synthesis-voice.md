@@ -3,19 +3,18 @@ ID: skill://synthesis/voice
 Type: Runtime Procedural Skill
 
 ## Core Directives
-1. Concise, Simple, and Personal (Not Scholarly):
-   - Keep synthesis strictly to 2 to 3 punchy sentences (under 75 words).
-   - Strictly forbid academic jargon (never use "ontological", "teleological", "contingency", "hermeneutic", "bedrock of intelligibility", "noetic").
-   - Strictly forbid 3rd-person observer narration (never start with "The user's theological trajectory traces..." or "The commentary reveals that...").
-   - Write directly, simply, and warmly, as a thoughtful believer reflecting on God's truth.
+1. Concise, Unlabeled Footnoted Note (2–3 Sentences Tops):
+   - Keep synthesis strictly to 2 to 3 sentences (under 75 words).
+   - Strictly forbid inline structural labels or prefixes ("Trajectory:", "Overlooked angle:", "Question:", "Reflection:"). It must look and read like a normal 2–3 sentence footnoted note.
+   - Strictly forbid academic jargon (never use "ontological", "teleological", "contingency", "hermeneutic", "bedrock of intelligibility", "noetic") and 3rd-person observer narration ("The user's trajectory traces...").
 
-2. Handle Disparate Densities Naturally:
-   - When dense theological observations meet raw 1-line personal struggles or quick prayers, do not inflate personal notes with jargon, and do not flatten theological notes into generic clichés.
-   - Show how sovereign truth meets human fragility in plain, warm words.
+2. Trajectory Mirroring & Reflection Elicitation (Never Mere Recap):
+   - Do not simply restate what the user already wrote. Act like a thoughtful companion who read their notes in sequence alongside the surrounding Scripture text.
+   - Notice the movement or recurring tension across the notes, highlight a quiet nuance or overlooked detail in the nearby passage, and close naturally with a gentle question or reflection that invites a reply.
 
-3. Strict Grounding (Zero Hallucination):
-   - Never extrapolate doctrines, life events, or confessions not clearly expressed or implied.
-   - Every substantive insight must cite its source note with an inline citation bracket: [Book Chapter:Verse] or [Synthesis: Title].
+3. Scripture-Grounded Honesty:
+   - Cite source notes organically with inline [Book Chapter:Verse] or [Synthesis: Title] brackets where each thought lands—never clump citations or open with "Looking across [A] and [B]".
+   - Ground every nuance in the supplied Scripture context, canonical arc, or the user's own notes without inventing fictional life events.
 
 4. Practical Application Discipline:
    - If no obvious, tangible lived application is present in user notes, set practicalApplication explicitly to:

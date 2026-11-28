@@ -144,6 +144,7 @@ interface InputNote {
   id: string;
   reference: string;
   content: string;
+  verseContext?: string;
   isSynthesis?: boolean;
   isPlainNote?: boolean;
   title?: string;
@@ -473,37 +474,54 @@ app.post('/api/skills/discard-synthesis', discardLimiter, handleDiscardSynthesis
 // POST /api/mcp/discard-synthesis - Backwards compatibility alias
 app.post('/api/mcp/discard-synthesis', discardLimiter, handleDiscardSynthesis);
 
-// Fallback generator adhering strictly to the pseudo-MCP resources (simple, concise, personal)
+function extractFallbackMotif(notes: InputNote[]): string {
+  const combined = notes.map((n) => n.content.toLowerCase()).join(' ');
+  const motifs: Array<[RegExp, string]> = [
+    [/grace|mercy|forgiv|pardon/, 'unearned grace'],
+    [/wait|patient|endur|quiet|delay|long/, 'patient endurance'],
+    [/fear|anxi|worry|troubl|dark|sorrow|grief|pain/, 'honest struggle and steadiness'],
+    [/word|truth|speak|voice|light|listen/, 'God’s spoken truth'],
+    [/faith|trust|believ|doubt|hope/, 'quiet trust'],
+    [/obey|follow|walk|repent|heart/, 'faithful obedience'],
+  ];
+  for (const [pattern, label] of motifs) {
+    if (pattern.test(combined)) return label;
+  }
+  return 'God’s steady faithfulness';
+}
+
+// Fallback generator adhering strictly to unlabeled 2-3 sentence trajectory mirroring
 function generateFallbackSynthesis(sampledNotes: InputNote[], existingProfile?: string) {
   const noteA = sampledNotes[0];
   const noteB = sampledNotes[1];
-  const noteC = sampledNotes[2];
+  const noteC = sampledNotes[sampledNotes.length - 1];
+  const motif = extractFallbackMotif(sampledNotes);
 
   let summary = 'No notes provided for trajectory synthesis.';
   if (sampledNotes.length === 1 && noteA) {
-    summary = `God's spoken word gives sovereign meaning and steadfast purpose to all of life [${noteA.reference}]. Even in seasons of uncertainty, His promises remain an unshakable foundation for quiet confidence.`;
+    summary = `Your reflection here lingers thoughtfully around ${motif} [${noteA.reference}], yet the surrounding passage also presses into what steady trust looks like in ordinary moments. Where might this truth be asking for a concrete step or honest prayer today?`;
   } else if (sampledNotes.length === 2 && noteA && noteB) {
-    summary = `God's spoken word remains the ultimate foundation of truth and life [${noteA.reference}]. Even through hardship, His quiet faithfulness upholds us and turns sorrow into patient hope [${noteB.reference}].`;
+    summary = `There is a subtle shift from your earlier thought on ${motif} [${noteA.reference}] toward a more personal reckoning with what that truth costs in practice [${noteB.reference}]. What changes when you read the second passage in light of the promise you noticed first?`;
   } else if (sampledNotes.length >= 3 && noteA && noteB && noteC) {
-    summary = `God's spoken word gives sovereign meaning to our lives [${noteA.reference}], anchoring the heart in divine faithfulness [${noteB.reference}]. In every circumstance, His grace sustains us with quiet endurance [${noteC.reference}].`;
+    summary = `Your notes keep circling back to ${motif} [${noteA.reference}], gradually moving from observation to personal conviction [${noteB.reference}]. Even so, the closing verse widens the frame beyond private comfort to patient hope [${noteC.reference}]—where do you sense that tension in your own week?`;
   } else if (sampledNotes.length > 0 && noteA) {
-    summary = `God's spoken word gives sovereign meaning and steadfast purpose to all of life [${noteA.reference}].`;
+    summary = `Your reflection centers on ${motif} [${noteA.reference}], opening a thread worth testing against the fuller passage around it. What detail in the neighboring verses feels easiest to pass over?`;
   }
 
   const mainTitles = sampledNotes
-    .map((n) => (n.isSynthesis ? n.title || 'Recursive Synthesis' : n.reference))
+    .map((n) => (n.isSynthesis ? n.title || 'Prior Reflection' : n.reference))
     .slice(0, 2)
     .join(' & ');
 
   const updatedProfile =
     existingProfile ||
-    `Reflective and honest; uses clear, everyday language with steady theological grounding in God's promises and sovereignty. Balances personal struggle with quiet trust.`;
+    `Reflective and honest; uses clear, everyday language while returning to ${motif}. Balances doctrinal observation with personal questions.`;
 
   return {
-    title: `Steadfast Truth in ${mainTitles || 'Scripture'}`,
+    title: `Tracing ${motif} (${mainTitles || 'Scripture'})`,
     synthesis: cleanNaturalSynthesis(summary),
-    keyThemes: ["God's Word", "Steadfast Care", "Quiet Trust"],
-    trajectorySummary: "Finding steady comfort in God's faithful promises even through changing seasons.",
+    keyThemes: [motif, 'Canonical Context', 'Personal Reflection'],
+    trajectorySummary: `Moving from initial observation toward deeper personal reckoning around ${motif}.`,
     practicalApplication: 'None explicit in user commentaries; reflections remain grounded in theological and exegetical observation.',
     updatedUserProfile: updatedProfile,
     sampledNotes,
@@ -523,7 +541,7 @@ app.post('/api/synthesize-notes', synthesisLimiter, async (req: Request, res: Re
     } = req.body as {
       notes: InputNote[];
       sampleCount?: number;
-      mode?: 'random' | 'recent' | 'all';
+      mode?: 'curated' | 'random' | 'recent' | 'all';
       userProfile?: string;
       engineMode?: 'simulated' | 'live';
     };
@@ -541,6 +559,7 @@ app.post('/api/synthesize-notes', synthesisLimiter, async (req: Request, res: Re
       id: String(n.id || '').slice(0, 100),
       reference: String(n.reference || '').slice(0, 200),
       content: String(n.content || '').slice(0, 10000),
+      verseContext: n.verseContext ? String(n.verseContext).slice(0, 900) : undefined,
       isSynthesis: Boolean(n.isSynthesis),
       isPlainNote: Boolean(n.isPlainNote),
       title: n.title ? String(n.title).slice(0, 200) : undefined,
@@ -560,7 +579,7 @@ app.post('/api/synthesize-notes', synthesisLimiter, async (req: Request, res: Re
     const requestedCount = Math.min(Math.max(1, Number(sampleCount) || 5), 20);
     const count = Math.min(requestedCount, validNotes.length);
 
-    if (mode === 'recent') {
+    if (mode === 'curated' || mode === 'recent') {
       sampledNotes = [...validNotes].slice(0, count);
     } else if (mode === 'all' || count >= validNotes.length) {
       sampledNotes = [...validNotes];
@@ -614,75 +633,64 @@ app.post('/api/synthesize-notes', synthesisLimiter, async (req: Request, res: Re
     const skills = getSynthesisSkills(userProfile);
     const skillsContextString = formatSkillsForSystemPrompt(skills);
 
-    // Construct prompt with note texts
+    // Construct prompt with note texts in chronological trajectory order + local Scripture context
     const notesText = sampledNotes
       .map((n, idx) => {
         const typeLabel = n.isSynthesis
-          ? 'Prior Synthesis Note'
+          ? 'Prior Intelligent Summary (with optional user reply)'
           : n.isPlainNote
           ? 'Plain Reflection Note (Personal reflection without biblical chapter/verse citation)'
           : 'Verse Commentary Note';
         const dateStr = n.updatedAt ? new Date(n.updatedAt).toLocaleDateString() : '';
+        const verseBlock = n.verseContext ? `\nScripture Context (±2 verses): "${n.verseContext}"` : '';
         return `[Note #${idx + 1}]
 Reference: ${n.reference}
 Type: ${typeLabel}
-Date: ${dateStr}
-Content: "${n.content}"`;
+Date: ${dateStr}${verseBlock}
+User Note: "${n.content}"`;
       })
       .join('\n\n');
 
-    const systemInstruction = `You generate Intelligent Summaries for a personal commentary Bible study canvas.
+    const systemInstruction = `You generate Intelligent Summaries for a personal Bible study canvas.
 You operate strictly under an authoritative, token-saving Synthesis Skills architecture.
 
 ${skillsContextString}
 
 === CRITICAL SYNTHESIS DIRECTIVES ===
-1. NATURAL, ORGANIC COMPOSITION (NO MECHANICAL ENUMERATION OR CITATION STACKING):
-   - STRICTLY FORBID mechanical grouping introductions or sequential cataloging. NEVER write:
-     * "Looking across [Reference 1] and [Reference 2] and [Reference 3]..."
-     * "Across [Ref 1], [Ref 2], and [Ref 3]..."
-     * "Tracing the movement between [Ref 1] and [Ref 2]..."
-     * "Bridging [Ref 1] with [Ref 2]..."
-     * "Seen in [Ref 1] and [Ref 2]..."
-   - NEVER clump citation brackets together sequentially (e.g. NEVER write "[Ref A] and [Ref B]" or "[1], [2], [3]").
-   - Distribute citations organically at the end of the distinct clause or thought they actually support, so the synthesis reads as pure, seamless theological and personal prose.
+1. STRICT 2–3 SENTENCES TOPS & UNLABELED FOOTNOTED NOTE FORMAT:
+   - Keep the entire synthesis strictly to 2 or 3 sentences (around 45–75 words max). NEVER write 4 or more sentences.
+   - It MUST look and read like a normal, seamless 2–3 sentence footnoted note.
+   - STRICTLY FORBID inline labels, bold headers, or sectional tags (NEVER write "Trajectory:", "Overlooked angle:", "Gap:", "Tension:", "Question:", or "Reflection:").
 
-2. CONCISE, SIMPLE, AND PERSONAL (NOT SCHOLARLY):
-   - Keep the synthesis to 2 to 3 punchy sentences (under 75 words).
-   - STRICTLY FORBID academic jargon (do not use words like "ontological", "teleological", "contingency", "hermeneutic", "bedrock of intelligibility").
-   - STRICTLY FORBID 3rd-person observer narration (NEVER start with "The user's theological trajectory traces..." or "The commentary reveals that...").
-   - Write directly, simply, and warmly, as a thoughtful believer reflecting on God's truth.
+2. ACT LIKE A THOUGHTFUL COMPANION — ANALYZE TRAJECTORY, NOT MERE RECAP:
+   - NEVER simply repeat, summarize, or paraphrase what the user already wrote in their notes.
+   - Read the sampled notes in chronological order alongside any provided Scripture Context (±2 verses) and your Living User Voice Memory:
+     * Notice where the user's thinking is moving, what tension or recurring motif runs underneath the notes, or how tone/focus shifts from earlier notes to later ones.
+     * Spot an overlooked nuance, counterpoint, or nearby detail in the surrounding Scripture text (or canonical arc) that the user's note passed over.
+     * Close naturally (usually in the final sentence) with an open question or gentle provocation that elicits further reflection when the user replies below.
+   - Write directly and warmly ("you" / "your", or shared "we" where natural)—never detached 3rd-person meta-talk ("The user's trajectory traces...").
 
-3. HANDLE DISPARATE DENSITIES CAREFULLY:
-   - The user's commentaries may vary in theological and personal density (e.g. a dense theological observation alongside a raw 1-line personal struggle or quick prayer).
-   - Do NOT inflate brief personal notes with heavy academic jargon.
-   - Do NOT flatten deep theological notes into generic clichés.
-   - Connect the disparate densities naturally: show how God's sovereign truth meets real human fragility in plain, warm words.
+3. NATURAL, ORGANIC CITATIONS (NO MECHANICAL GROUPING OR CITATION STACKING):
+   - STRICTLY FORBID introductory citation lists ("Looking across [Ref 1] and [Ref 2]...", "Across [A], [B], and [C]...", "Tracing the thread across [A] and [B]...").
+   - NEVER clump citation brackets sequentially ("[Ref A] and [Ref B]" or "[1], [2]").
+   - Distribute inline [Reference] citations (matching the exact Reference string of each note) naturally at the end of the specific clause they support.
 
-3. STRICT GROUNDING & NON-ASSUMPTION (NO HALLUCINATIONS):
-   - You MUST NOT assume, infer, or extrapolate doctrines, life events, psychological states, or personal confessions that the user's notes DID NOT express or clearly imply.
-   - Every substantive insight MUST include an inline citation bracket [Reference] (e.g. [John 1:1], [Genesis 1:3], [Romans 8:28], or [Synthesis: Title]) indicating the exact note from which it is derived.
+4. HONESTY, TONE & GROUNDING:
+   - Strictly forbid academic jargon ("ontological", "teleological", "contingency", "hermeneutic").
+   - Never invent fictional life events or personal confessions not grounded in the notes or Scripture context. Yet do NOT hide behind vague clichés—bring genuine biblical observation and honest, mirror-like questions.
 
-4. PRACTICAL APPLICATION RULE:
-   - If the user's notes do not contain or clearly imply an obvious, tangible practical application (for example, if they are doctrinal, reflective, or exegetical observations), DO NOT FORCE OR INVENT ONE.
-   - In that case, explicitly set practicalApplication to: "None explicit in user commentaries; reflections remain grounded in theological and exegetical observation."
-   - Only provide a practical application if the user's own commentaries explicitly discuss lived obedience, ethical duty, personal prayer, or tangible praxis.
+5. PRACTICAL APPLICATION & LIVING MEMORY UPDATE:
+   - Only populate 'practicalApplication' if the user's own notes explicitly discuss concrete praxis; otherwise set it to: "None explicit in user commentaries; reflections remain grounded in theological and exegetical observation."
+   - Provide 'updatedUserProfile': A concise (80 to 150 words) abridged memory document capturing the user's tone, recurring theological tensions, unanswered questions, and study trajectory for future sessions.`;
 
-5. LIVING USER VOICE MEMORY UPDATE:
-   - Provide 'updatedUserProfile': A concise (80 to 150 words) abridged memory document capturing:
-     * Personal tone & voice (simple, honest, thoughtful).
-     * Distinctive themes observed in the notes.
-     * How high-density and personal-density notes interact in their study.
-   This will be saved back into dynamic user memory (memory://user/living-profile).`;
-
-    const userPrompt = `Here is the sampled collection of ${sampledNotes.length} notes from the user's commentary canvas:
+    const userPrompt = `Here are ${sampledNotes.length} notes from the user's study canvas, ordered chronologically from earliest to most recent:
 
 ${notesText}
 
-Synthesize the underlying trajectory into a concise, simple, and personal 2-3 sentence statement with inline [Reference] citations, strictly adhering to the authoritative synthesis skills. Ensure the composition is completely natural and fluid—avoid mechanical listing, opening with "looking across [1] and [2]", or clumping citation brackets together.`;
+Write a 2–3 sentence (under 75 words) unlabeled footnoted note that acts like another thoughtful believer reflecting back the trajectory of these notes, surfacing an overlooked nuance or tension from the surrounding Scripture text, and closing cleanly with a thought or question that invites deeper reflection. Do not paraphrase what the notes already say, and do not use inline labels.`;
 
     const candidateModels: Array<{ model: string; thinkingLevel: ThinkingLevel }> = [
-      { model: 'gemini-4-hydrogen', thinkingLevel: ThinkingLevel.LOW },
+      { model: 'gemini-4-hydrogen', thinkingLevel: ThinkingLevel.MEDIUM },
       { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL },
     ];
     let responseText: string | null = null;
@@ -708,16 +716,16 @@ Synthesize the underlying trajectory into a concise, simple, and personal 2-3 se
                 synthesis: {
                   type: Type.STRING,
                   description:
-                    'A 2-3 sentence, simple, personal synthesis in a natural, fluid composition. Distribute individual [Reference] citations organically where each insight occurs; NEVER write mechanical lists like "looking across [A] and [B]" or clump citations sequentially.',
+                    'Strictly 2-3 sentences (under 75 words) written as a normal, unlabeled footnoted note. Analyze the trajectory across the notes, weave in an overlooked nuance from the Scripture context or canon without repeating the user, and close naturally with an open thought or question to elicit further reflection. Distribute [Reference] citations organically; NEVER use inline labels like "Trajectory:" or "Overlooked angle:", and NEVER clump citations.',
                 },
                 keyThemes: {
                   type: Type.ARRAY,
                   items: { type: Type.STRING },
-                  description: '2-3 concise, simple motifs or themes in everyday words.',
+                  description: '2-3 concise, simple motifs or tensions in everyday words.',
                 },
                 trajectorySummary: {
                   type: Type.STRING,
-                  description: 'A short one-sentence takeaway in simple, warm words.',
+                  description: 'A short one-sentence read on where the user’s reflections are moving.',
                 },
                 practicalApplication: {
                   type: Type.STRING,

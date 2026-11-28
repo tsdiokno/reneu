@@ -2670,11 +2670,9 @@ export const App: React.FC = () => {
           </nav>
         </div>
 
-        {/* Animated Add Note Button (Pure compositor transform + opacity across all viewports) */}
+        {/* Animated Add Note Button (Pure compositor transform + opacity directly on button so backdrop-blur-xl is never isolated by a wrapper backdrop root) */}
         <div
-          className={`dock-action-wrapper overflow-visible flex items-center justify-center shrink-0 absolute inset-y-0 right-0 w-16 ml-0 lg:right-auto lg:left-full lg:ml-4 ${
-            currentView === 'notes' ? 'is-open' : 'is-closed'
-          }`}
+          className="overflow-visible flex items-center justify-center shrink-0 absolute inset-y-0 right-0 w-16 ml-0 lg:right-auto lg:left-full lg:ml-4 pointer-events-none"
           aria-hidden={currentView !== 'notes'}
         >
           <button
@@ -2684,7 +2682,9 @@ export const App: React.FC = () => {
               setIsComposingPlainNote((prev) => !prev);
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`w-16 h-16 shrink-0 rounded-full border backdrop-blur-xl [box-shadow:var(--shadow-dock)] flex items-center justify-center transition-[transform,background-color,color,border-color] duration-200 cursor-pointer hover:scale-105 active:scale-95 ${
+            className={`dock-action-btn ${
+              currentView === 'notes' ? 'is-open' : 'is-closed'
+            } w-16 h-16 shrink-0 rounded-full border backdrop-blur-xl [box-shadow:var(--shadow-dock)] flex items-center justify-center cursor-pointer hover:scale-105 active:scale-95 ${
               isComposingPlainNote
                 ? 'bg-[var(--text-primary)]/90 text-[var(--bg-app)] border-[var(--text-primary)]'
                 : 'border-[var(--line-subtle)] bg-[var(--bg-dock)] text-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-app)] hover:border-[var(--text-primary)]'
